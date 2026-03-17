@@ -1,0 +1,1096 @@
+openapi: 3.1.0
+
+info:
+  title: GamerMarkt API
+  version: 1.0.0
+  description: |
+    REST API for the GamerMarkt gaming marketplace platform.
+
+    ## Authentication
+
+    Every request must be authenticated with a **64-character hex API key**
+    via the `X-Api-Key` header:
+
+    ```
+    X-Api-Key: <api_key>
+    ```
+
+    ### Obtaining an API Key
+
+    1. Log in to your GamerMarkt account.
+    2. Navigate to **Dashboard → API Access** (`/dashboard/api-access`).
+    3. Complete email verification and click **Generate API Key**.
+    4. Copy the key immediately — it will be partially masked afterwards.
+
+    > **Note:** Only one key exists per account. You can regenerate it at any time
+    > (the old key becomes invalid immediately) or toggle it active/inactive.
+    > A minimum purchase history may be required before key generation is unlocked.
+
+    ## Currencies
+
+    Your account currency is determined by your registered country:
+    - **Turkish accounts** → `TRY`
+    - **All other accounts** → `EUR`
+
+    All monetary values in responses are returned as **strings** with exactly
+    two decimal places (e.g. `"50.00"`), using `.` as the decimal separator
+    and no thousands separator.
+
+    ## Pagination
+
+    Paginated endpoints accept `page` and `per_page` query parameters and
+    return a `meta` object:
+
+    ```json
+    {
+      "meta": {
+        "total": 250,
+        "page": 2,
+        "per_page": 20,
+        "last_page": 13
+      }
+    }
+    ```
+
+    ## Error Format
+
+    All errors follow a consistent envelope:
+
+    ```json
+    {
+      "success": false,
+      "error": "Human-readable message.",
+      "code": "ERROR_CODE"
+    }
+    ```
+
+    See individual endpoints for the specific error codes they can return.
+
+    ## Rate Limiting
+
+    > **All endpoints share a single limit of 15 requests per minute.**
+    >
+    > Exceeding this limit will cause your requests to be blocked for an extended
+    > period. Design your integration accordingly — cache responses where possible
+    > and avoid polling at high frequency.
+
+servers:
+  - url: https://www.gamermarkt.com/api/v1
+    description: Production
+
+security:
+  - ApiKeyHeader: []
+
+tags:
+  - name: Account
+    description: Authenticated user account information
+  - name: Products
+    description: Browse available products
+  - name: Orders
+    description: Create and inspect orders
+
+paths:
+  /account:
+    get:
+      operationId: getAccount
+      summary: Get account balance
+      description: |
+        Returns the authenticated user's available and blocked balance
+        in their account currency (TRY or EUR).
+      tags: [Account]
+      responses:
+        "200":
+          description: Account balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountResponse"
+              example:
+                success: true
+                data:
+                  balance: "150.00"
+                  blocked_balance: "10.00"
+                  currency: "TRY"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /products:
+    get:
+      operationId: listProducts
+      summary: List products
+      description: |
+        Returns active, purchasable products.
+
+        **Default behaviour (no `per_page`):** all matching products are returned in a single
+        response — no `meta` object is included.
+
+        **Paginated mode:** pass `per_page` (and optionally `page`) to receive a subset of
+        results along with a `meta` pagination object.
+
+        - Top-up products (requiring dynamic target IDs) are always excluded.
+        - `name` and `category_name` language is controlled by the `lang` parameter (`tr`/`en`); defaults to the authenticated user's account language.
+        - `price` is always in the authenticated user's currency.
+        - `stock` is the number of units currently available; `0` means out of stock.
+      tags: [Products]
+      parameters:
+        - name: lang
+          in: query
+          description: |
+            Language for `name` and `category_name` fields.
+            Accepts `tr` or `en`. When omitted, the language is determined by the
+            authenticated user's registered country.
+          schema:
+            type: string
+            enum: [tr, en]
+          example: en
+        - name: per_page
+          in: query
+          description: |
+            Items per page. **When omitted, all products are returned without pagination.**
+            Must be between 1 and 100 when provided.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+          example: 20
+        - name: page
+          in: query
+          description: Page number (1-based). Only used when `per_page` is also provided.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          example: 1
+        - name: category_id
+          in: query
+          description: Filter by category ID. Omit to return all categories.
+          schema:
+            type: integer
+          example: 5
+      responses:
+        "200":
+          description: Product list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResponse"
+              examples:
+                all_products:
+                  summary: All products (no pagination)
+                  value:
+                    success: true
+                    data:
+                      - ref: "steam-50-try"
+                        name: "Steam 50 TRY"
+                        category_id: 5
+                        category_name: "Steam"
+                        is_topup: false
+                        price: "50.00"
+                        currency: "TRY"
+                        stock: 120
+                      - ref: "steam-100-try"
+                        name: "Steam 100 TRY"
+                        category_id: 5
+                        category_name: "Steam"
+                        is_topup: false
+                        price: "100.00"
+                        currency: "TRY"
+                        stock: 45
+                paginated:
+                  summary: Paginated (per_page provided)
+                  value:
+                    success: true
+                    data:
+                      - ref: "steam-50-try"
+                        name: "Steam 50 TRY"
+                        category_id: 5
+                        category_name: "Steam"
+                        is_topup: false
+                        price: "50.00"
+                        currency: "TRY"
+                        stock: 120
+                    meta:
+                      total: 200
+                      page: 1
+                      per_page: 20
+                      last_page: 10
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /orders:
+    get:
+      operationId: listOrders
+      summary: List orders
+      description: |
+        Returns a paginated list of all orders placed by the authenticated user,
+        sorted newest first.
+      tags: [Orders]
+      parameters:
+        - name: page
+          in: query
+          description: Page number (1-based)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          description: Items per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: Order list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderListResponse"
+              example:
+                success: true
+                data:
+                  - id: 123
+                    amount: "100.00"
+                    currency: "TRY"
+                    discount: "0.00"
+                    status: "completed"
+                    payment: "paid"
+                    created_at: "2024-06-15T10:30:00+03:00"
+                    completed_at: "2024-06-15T10:30:05+03:00"
+                    cancelled_at: null
+                  - id: 122
+                    amount: "50.00"
+                    currency: "TRY"
+                    discount: "5.00"
+                    status: "cancelled"
+                    payment: "refunded"
+                    created_at: "2024-06-14T09:12:00+03:00"
+                    completed_at: null
+                    cancelled_at: "2024-06-14T09:15:00+03:00"
+                meta:
+                  total: 2
+                  page: 1
+                  per_page: 20
+                  last_page: 1
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+    post:
+      operationId: createOrder
+      summary: Create order
+      description: |
+        Places a new order using the authenticated user's account balance.
+
+        ### Rules
+        - Each product is identified by its `ref` string (from the `/products` endpoint).
+        - `amount` must be between **1 and 49** per line item.
+        - Maximum **20 distinct products** per request.
+        - **Duplicate refs** in the same request are rejected — combine quantities into a single entry instead.
+        - The full order amount is deducted from the user's balance atomically.
+        - Orders are processed automatically; digital goods are delivered to the account.
+
+        ### Possible `ORDER_FAILED` reasons
+        | Condition | Error message |
+        |-----------|---------------|
+        | Account has no purchase permission | `You do not have permission to make purchases.` |
+        | Product ref not found or inactive | `Product not found: {ref}` |
+        | Insufficient stock | `Not enough stock for {name}. Available: {n}` |
+        | Insufficient balance | `Insufficient balance.` (includes `redirect`, `balance_needed`, `currency`) |
+        | Currency mismatch | `Currency mismatch.` |
+        | Order record could not be saved | `Order could not be created.` |
+        | Payment deduction failed | `Payment failed.` |
+        | Steam/Google/Apple codes for non-TR users | `Steam Wallet Codes, Google Play Codes, Apple iTunes Codes are unavailable.` |
+      tags: [Orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+            examples:
+              single_product:
+                summary: Single product
+                value:
+                  products:
+                    - ref: "steam-50-try"
+                      amount: 1
+              multiple_products:
+                summary: Multiple products
+                value:
+                  products:
+                    - ref: "steam-50-try"
+                      amount: 2
+                    - ref: "pubg-mobile-60uc"
+                      amount: 5
+      responses:
+        "201":
+          description: Order created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateOrderResponse"
+              example:
+                success: true
+                data:
+                  order_id: 456
+                  amount: "100.00"
+                  discount: "0.00"
+                  currency: "TRY"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "422":
+          description: Validation error or order failure
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/OrderFailedError"
+                  - $ref: "#/components/schemas/InsufficientBalanceError"
+              examples:
+                validation_error:
+                  summary: Missing or invalid request body
+                  value:
+                    success: false
+                    error: "products array is required."
+                    code: "VALIDATION_ERROR"
+                duplicate_ref:
+                  summary: Duplicate product ref
+                  value:
+                    success: false
+                    error: "Duplicate product refs are not allowed. Combine amounts into a single entry per ref."
+                    code: "VALIDATION_ERROR"
+                invalid_amount:
+                  summary: Amount out of range
+                  value:
+                    success: false
+                    error: "Invalid product entry: ref required, amount must be 1-49."
+                    code: "VALIDATION_ERROR"
+                product_not_found:
+                  summary: Product ref not found
+                  value:
+                    success: false
+                    error: "Product not found: steam-999-try"
+                    code: "NOT_FOUND"
+                out_of_stock:
+                  summary: Insufficient stock
+                  value:
+                    success: false
+                    error: "Not enough stock for Steam 50 TRY. Available: 0"
+                    code: "ORDER_FAILED"
+                insufficient_balance:
+                  summary: Insufficient balance (with redirect)
+                  value:
+                    success: false
+                    error: "Insufficient balance."
+                    code: "ORDER_FAILED"
+                    redirect: "https://www.gamermarkt.com/bakiye-yukle"
+                    balance_needed: 50
+                    currency: "try"
+
+  /order/{id}:
+    get:
+      operationId: getOrder
+      summary: Get order details
+      description: |
+        Returns full details for a single order, including its products and
+        any delivered digital goods.
+
+        ### Delivery format
+
+        The `deliveries` array contains the digital goods delivered for this
+        order. The shape of each entry depends on the product type:
+
+        **Account products** (e.g. game accounts, subscriptions):
+        ```json
+        {
+          "product_ref": "netflix-1m-tr",
+          "username": "user@example.com",
+          "password": "secret123",
+          "delivered_at": "2024-06-15T10:30:05+03:00"
+        }
+        ```
+
+        **E-pin / Code products** (e.g. Steam cards, gift codes):
+        ```json
+        {
+          "product_ref": "steam-50-try",
+          "code": "ABCD-EFGH-IJKL-MNOP",
+          "delivered_at": "2024-06-15T10:30:05+03:00"
+        }
+        ```
+
+        `deliveries` is empty while the order is still `processing`.
+        A `completed` order with non-empty `products` will always have
+        corresponding entries in `deliveries`.
+      tags: [Orders]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Order ID
+          schema:
+            type: integer
+            minimum: 1
+          example: 123
+      responses:
+        "200":
+          description: Order details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderDetailResponse"
+              examples:
+                completed_account:
+                  summary: Completed order with account deliveries
+                  value:
+                    success: true
+                    data:
+                      id: 123
+                      amount: "100.00"
+                      currency: "TRY"
+                      discount: "0.00"
+                      status: "completed"
+                      payment: "paid"
+                      created_at: "2024-06-15T10:30:00+03:00"
+                      completed_at: "2024-06-15T10:30:05+03:00"
+                      cancelled_at: null
+                      cancellation_reason: null
+                      products:
+                        - product_ref: "steam-50-try"
+                          name: "Steam 50 TRY"
+                          amount: 2
+                          delivered: 2
+                          price: "50.00"
+                          total_price: "100.00"
+                      deliveries:
+                        - product_ref: "steam-50-try"
+                          username: "acc1@example.com"
+                          password: "pass1"
+                          delivered_at: "2024-06-15T10:30:05+03:00"
+                        - product_ref: "steam-50-try"
+                          username: "acc2@example.com"
+                          password: "pass2"
+                          delivered_at: "2024-06-15T10:30:05+03:00"
+                completed_epin:
+                  summary: Completed order with e-pin deliveries
+                  value:
+                    success: true
+                    data:
+                      id: 124
+                      amount: "50.00"
+                      currency: "TRY"
+                      discount: "0.00"
+                      status: "completed"
+                      payment: "paid"
+                      created_at: "2024-06-16T11:00:00+03:00"
+                      completed_at: "2024-06-16T11:00:03+03:00"
+                      cancelled_at: null
+                      cancellation_reason: null
+                      products:
+                        - product_ref: "steam-gift-50-try"
+                          name: "Steam Gift Card 50 TRY"
+                          amount: 1
+                          delivered: 1
+                          price: "50.00"
+                          total_price: "50.00"
+                      deliveries:
+                        - product_ref: "steam-gift-50-try"
+                          code: "ABCD-EFGH-IJKL-MNOP"
+                          delivered_at: "2024-06-16T11:00:03+03:00"
+                processing:
+                  summary: Order still processing
+                  value:
+                    success: true
+                    data:
+                      id: 125
+                      amount: "30.00"
+                      currency: "EUR"
+                      discount: "0.00"
+                      status: "processing"
+                      payment: "paid"
+                      created_at: "2024-06-17T08:00:00+00:00"
+                      completed_at: null
+                      cancelled_at: null
+                      cancellation_reason: null
+                      products:
+                        - product_ref: "league-rp-1380"
+                          name: "1380 Riot Points"
+                          amount: 1
+                          delivered: 0
+                          price: "30.00"
+                          total_price: "30.00"
+                      deliveries: []
+                cancelled:
+                  summary: Cancelled order
+                  value:
+                    success: true
+                    data:
+                      id: 121
+                      amount: "50.00"
+                      currency: "TRY"
+                      discount: "0.00"
+                      status: "cancelled"
+                      payment: "refunded"
+                      created_at: "2024-06-13T07:00:00+03:00"
+                      completed_at: null
+                      cancelled_at: "2024-06-13T07:05:00+03:00"
+                      cancellation_reason: "Product became unavailable."
+                      products:
+                        - product_ref: "some-product"
+                          name: "Some Product"
+                          amount: 1
+                          delivered: 0
+                          price: "50.00"
+                          total_price: "50.00"
+                      deliveries: []
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+components:
+  securitySchemes:
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: |
+        Pass the API key in the `X-Api-Key` header.
+        ```
+        X-Api-Key: <64-char-hex-key>
+        ```
+
+  schemas:
+    # ── Shared ─────────────────────────────────────────────────────────────
+
+    PaginationMeta:
+      type: object
+      required: [total, page, per_page, last_page]
+      properties:
+        total:
+          type: integer
+          description: Total number of items across all pages
+          examples: [250]
+        page:
+          type: integer
+          description: Current page number
+          examples: [1]
+        per_page:
+          type: integer
+          description: Items returned per page
+          examples: [20]
+        last_page:
+          type: integer
+          description: Index of the last available page
+          examples: [13]
+
+    OrderStatus:
+      type: string
+      enum: [processing, completed, cancelled, unknown]
+      description: |
+        Current fulfilment status of an order.
+        - `processing` — payment received, awaiting delivery
+        - `completed` — all items delivered
+        - `cancelled` — order cancelled (balance refunded)
+        - `unknown` — unexpected internal state
+
+    PaymentStatus:
+      type: string
+      enum: [pending, paid, refunded, unknown]
+      description: |
+        Payment state of an order.
+        - `pending` — payment not yet collected
+        - `paid` — balance successfully deducted
+        - `refunded` — balance returned to account
+        - `unknown` — unexpected internal state
+
+    # ── Account ────────────────────────────────────────────────────────────
+
+    AccountData:
+      type: object
+      required: [balance, blocked_balance, currency]
+      properties:
+        balance:
+          type: string
+          description: Available balance (2 decimal places, no thousands separator)
+          examples: ["150.00"]
+        blocked_balance:
+          type: string
+          description: |
+            Balance reserved for pending orders — not yet spendable.
+          examples: ["10.00"]
+        currency:
+          type: string
+          enum: [TRY, EUR]
+          description: Account currency determined by registered country
+          examples: ["TRY"]
+
+    AccountResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          examples: [true]
+        data:
+          $ref: "#/components/schemas/AccountData"
+
+    # ── Products ───────────────────────────────────────────────────────────
+
+    Product:
+      type: object
+      required: [ref, name, is_topup, price, currency, stock]
+      properties:
+        ref:
+          type: string
+          description: |
+            Unique product reference string. Use this value in the
+            `POST /orders` request body.
+          examples: ["steam-50-try"]
+        name:
+          type: string
+          description: Product name in the resolved language (`lang` param, or user account language)
+          examples: ["Steam 50 TRY"]
+        category_id:
+          type: [integer, "null"]
+          description: Category ID, or null if uncategorised
+          examples: [5]
+        category_name:
+          type: [string, "null"]
+          description: Category name in the resolved language, or null if uncategorised
+          examples: ["Steam"]
+        is_topup:
+          type: boolean
+          description: |
+            Always `false` via the API. Top-up products that require
+            a target account ID are excluded from this endpoint.
+          examples: [false]
+        price:
+          type: string
+          description: Unit price in the user's currency (2 decimal places)
+          examples: ["50.00"]
+        currency:
+          type: string
+          enum: [TRY, EUR]
+          description: Price currency
+          examples: ["TRY"]
+        stock:
+          type: integer
+          minimum: 0
+          description: Units available right now; `0` means out of stock
+          examples: [120]
+
+    ProductListResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          examples: [true]
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Product"
+        meta:
+          description: |
+            Present only when `per_page` query parameter was supplied.
+            Omitted when all products are returned in a single response.
+          $ref: "#/components/schemas/PaginationMeta"
+
+    # ── Orders (list) ──────────────────────────────────────────────────────
+
+    OrderSummary:
+      type: object
+      required: [id, amount, currency, discount, status, payment, created_at]
+      properties:
+        id:
+          type: integer
+          description: Order ID
+          examples: [123]
+        amount:
+          type: string
+          description: Total charged (after discount, 2 decimal places)
+          examples: ["100.00"]
+        currency:
+          type: string
+          enum: [TRY, EUR]
+          examples: ["TRY"]
+        discount:
+          type: string
+          description: Discount applied by coupon (2 decimal places; `"0.00"` if none)
+          examples: ["0.00"]
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        payment:
+          $ref: "#/components/schemas/PaymentStatus"
+        created_at:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp with timezone offset
+          examples: ["2024-06-15T10:30:00+03:00"]
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+          description: When all items were delivered; null if not yet completed
+          examples: ["2024-06-15T10:30:05+03:00"]
+        cancelled_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the order was cancelled; null if not cancelled
+          examples: [null]
+
+    OrderListResponse:
+      type: object
+      required: [success, data, meta]
+      properties:
+        success:
+          type: boolean
+          examples: [true]
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderSummary"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+
+    # ── Order create ───────────────────────────────────────────────────────
+
+    CreateOrderItem:
+      type: object
+      required: [ref, amount]
+      properties:
+        ref:
+          type: string
+          description: Product reference string (from `GET /products`)
+          examples: ["steam-50-try"]
+        amount:
+          type: integer
+          minimum: 1
+          maximum: 49
+          description: Quantity to purchase
+          examples: [2]
+
+    CreateOrderRequest:
+      type: object
+      required: [products]
+      properties:
+        products:
+          type: array
+          minItems: 1
+          maxItems: 20
+          description: |
+            List of products to order. Each `ref` must appear **at most once**;
+            combine quantities into a single entry if you need more than one unit
+            of the same product.
+          items:
+            $ref: "#/components/schemas/CreateOrderItem"
+
+    CreateOrderData:
+      type: object
+      required: [order_id, amount, discount, currency]
+      properties:
+        order_id:
+          type: integer
+          description: ID of the newly created order
+          examples: [456]
+        amount:
+          type: string
+          description: Total amount charged after discount (2 decimal places)
+          examples: ["100.00"]
+        discount:
+          type: string
+          description: Discount applied (2 decimal places; `"0.00"` if none)
+          examples: ["0.00"]
+        currency:
+          type: string
+          enum: [TRY, EUR]
+          description: Currency in which the order was charged
+          examples: ["TRY"]
+
+    CreateOrderResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          examples: [true]
+        data:
+          $ref: "#/components/schemas/CreateOrderData"
+
+    # ── Order detail ───────────────────────────────────────────────────────
+
+    OrderProduct:
+      type: object
+      required: [product_ref, name, amount, delivered, price, total_price]
+      properties:
+        product_ref:
+          type: string
+          description: Product reference string
+          examples: ["steam-50-try"]
+        name:
+          type: string
+          description: Product name at the time of purchase
+          examples: ["Steam 50 TRY"]
+        amount:
+          type: integer
+          description: Quantity ordered
+          examples: [2]
+        delivered:
+          type: integer
+          description: Quantity delivered so far (< `amount` means partial delivery)
+          examples: [2]
+        price:
+          type: string
+          description: Unit price at time of purchase (2 decimal places)
+          examples: ["50.00"]
+        total_price:
+          type: string
+          description: "`price × amount` (2 decimal places)"
+          examples: ["100.00"]
+
+    DeliveryAccount:
+      type: object
+      required: [product_ref, username, password, delivered_at]
+      description: Delivered credential for an account-type product
+      properties:
+        product_ref:
+          type: string
+          examples: ["netflix-1m-tr"]
+        username:
+          type: string
+          examples: ["user@example.com"]
+        password:
+          type: string
+          examples: ["secret123"]
+        delivered_at:
+          type: [string, "null"]
+          format: date-time
+          examples: ["2024-06-15T10:30:05+03:00"]
+
+    DeliveryEpin:
+      type: object
+      required: [product_ref, code, delivered_at]
+      description: Delivered code for an e-pin/gift-card type product
+      properties:
+        product_ref:
+          type: string
+          examples: ["steam-50-try"]
+        code:
+          type: string
+          description: Redemption code
+          examples: ["ABCD-EFGH-IJKL-MNOP"]
+        delivered_at:
+          type: [string, "null"]
+          format: date-time
+          examples: ["2024-06-15T10:30:05+03:00"]
+
+    OrderDetail:
+      type: object
+      required:
+        [
+          id,
+          amount,
+          currency,
+          discount,
+          status,
+          payment,
+          created_at,
+          products,
+          deliveries,
+        ]
+      properties:
+        id:
+          type: integer
+          examples: [123]
+        amount:
+          type: string
+          description: Total charged after discount (2 decimal places)
+          examples: ["100.00"]
+        currency:
+          type: string
+          enum: [TRY, EUR]
+          examples: ["TRY"]
+        discount:
+          type: string
+          description: Coupon discount (2 decimal places; `"0.00"` if none)
+          examples: ["0.00"]
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        payment:
+          $ref: "#/components/schemas/PaymentStatus"
+        created_at:
+          type: string
+          format: date-time
+          examples: ["2024-06-15T10:30:00+03:00"]
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+          examples: ["2024-06-15T10:30:05+03:00"]
+        cancelled_at:
+          type: [string, "null"]
+          format: date-time
+          examples: [null]
+        cancellation_reason:
+          type: [string, "null"]
+          description: Plain-text reason for cancellation; null if not cancelled
+          examples: [null]
+        products:
+          type: array
+          description: Line items in this order
+          items:
+            $ref: "#/components/schemas/OrderProduct"
+        deliveries:
+          type: array
+          description: |
+            Digital goods delivered for this order.
+            Empty while status is `processing`.
+            Each item is either a credential pair (account) or a single code (e-pin).
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/DeliveryAccount"
+              - $ref: "#/components/schemas/DeliveryEpin"
+            discriminator:
+              propertyName: code
+              mapping:
+                epin: "#/components/schemas/DeliveryEpin"
+                account: "#/components/schemas/DeliveryAccount"
+
+    OrderDetailResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          examples: [true]
+        data:
+          $ref: "#/components/schemas/OrderDetail"
+
+    # ── Errors ─────────────────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      required: [success, error, code]
+      properties:
+        success:
+          type: boolean
+          examples: [false]
+        error:
+          type: string
+          description: Human-readable error message
+          examples: ["API key required."]
+        code:
+          type: string
+          description: Machine-readable error code
+          examples: ["UNAUTHORIZED"]
+
+    ValidationError:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          properties:
+            code:
+              type: string
+              enum: [VALIDATION_ERROR, NOT_FOUND]
+              examples: ["VALIDATION_ERROR"]
+
+    OrderFailedError:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          properties:
+            code:
+              type: string
+              enum: [ORDER_FAILED]
+              examples: ["ORDER_FAILED"]
+
+    InsufficientBalanceError:
+      description: |
+        Extended error returned when the order fails specifically due to
+        insufficient balance. Includes a `redirect` URL to the top-up page,
+        the exact `balance_needed` (rounded up to the nearest integer),
+        and the `currency` code.
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          required: [redirect, balance_needed, currency]
+          properties:
+            code:
+              type: string
+              enum: [ORDER_FAILED]
+              examples: ["ORDER_FAILED"]
+            redirect:
+              type: string
+              format: uri
+              description: URL of the balance top-up page
+              examples: ["https://www.gamermarkt.com/bakiye-yukle"]
+            balance_needed:
+              type: number
+              description: Minimum amount that must be added to cover the order
+              examples: [50]
+            currency:
+              type: string
+              description: Currency code in lowercase
+              enum: [try, eur]
+              examples: ["try"]
+
+  responses:
+    Unauthorized:
+      description: |
+        Authentication failed. Possible reasons:
+        - `Authorization` / `X-Api-Key` header is missing
+        - Key is not exactly 64 characters
+        - Key does not exist in the database
+        - Key has been deactivated
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            missing_key:
+              summary: Header not provided
+              value:
+                success: false
+                error: "API key required."
+                code: "UNAUTHORIZED"
+            invalid_key:
+              summary: Key not found or inactive
+              value:
+                success: false
+                error: "Invalid or inactive API key."
+                code: "UNAUTHORIZED"
+
+    NotFound:
+      description: |
+        The requested resource does not exist, or belongs to a different user.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error: "Order not found."
+            code: "NOT_FOUND"
+
+    MethodNotAllowed:
+      description: The HTTP method used is not supported for this endpoint.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            success: false
+            error: "Method not allowed."
+            code: "METHOD_NOT_ALLOWED"
