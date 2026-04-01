@@ -100,12 +100,17 @@ class GamerMarkt
      * (no `meta` key). When $perPage is set the response includes a `meta`
      * pagination object.
      *
+     * By default only standard products are returned. Set $listTopups to true
+     * to include top-up products, which expose a `topup_inputs` definition
+     * array that must be echoed back in createOrder().
+     *
      * @param  string|null $lang       Language for name/category_name: 'tr' or 'en'.
      *                                 Defaults to the user's account language.
      * @param  int|null    $perPage    Items per page (1–100).
      *                                 Null → all products, no pagination.
      * @param  int         $page       Page number (≥1). Only used with $perPage.
      * @param  int|null    $categoryId Filter by category ID.
+     * @param  bool        $listTopups Include top-up products alongside standard products.
      * @return array{success: bool, data: array<int, array<string, mixed>>, meta?: array}
      * @throws GamerMarktException
      * @throws RuntimeException
@@ -114,7 +119,8 @@ class GamerMarkt
         ?string $lang       = null,
         ?int    $perPage    = null,
         int     $page       = 1,
-        ?int    $categoryId = null
+        ?int    $categoryId = null,
+        bool    $listTopups = false
     ): array {
         $query = [];
 
@@ -122,6 +128,7 @@ class GamerMarkt
         if ($perPage    !== null) $query['per_page']    = $perPage;
         if ($page       !== 1)   $query['page']        = $page;
         if ($categoryId !== null) $query['category_id'] = $categoryId;
+        if ($listTopups)         $query['list_topups'] = 1;
 
         return $this->request('GET', '/products', $query);
     }
@@ -151,13 +158,15 @@ class GamerMarkt
      * Each element of $products must be an associative array with:
      *   - 'ref'    (string) — product reference from getProducts()
      *   - 'amount' (int)    — quantity, 1–49
+     *   - 'topup_inputs' (array<string, string>, optional) — required for
+     *     top-up products; keys must match the product's topup input definitions
      *
      * Rules enforced locally before sending the request:
      *   - At least 1 product, at most 20.
      *   - No duplicate refs.
      *   - Amount between 1 and 49.
      *
-     * @param  array<int, array{ref: string, amount: int}> $products
+     * @param  array<int, array{ref: string, amount: int, topup_inputs?: array<string, string>}> $products
      * @return array{order_id: int, amount: string, discount: string, currency: string}
      * @throws InvalidArgumentException   on local validation failure
      * @throws GamerMarktException        on API error
@@ -191,7 +200,7 @@ class GamerMarkt
     // ── Validation ──────────────────────────────────────────────────────────
 
     /**
-     * @param  array<int, array{ref: string, amount: int}> $products
+     * @param  array<int, array{ref: string, amount: int, topup_inputs?: array<string, string>}> $products
      * @throws InvalidArgumentException
      */
     private function validateOrderProducts(array $products): void
@@ -228,6 +237,22 @@ class GamerMarkt
                 throw new InvalidArgumentException(
                     "Duplicate product ref '{$item['ref']}'. Combine quantities into a single entry."
                 );
+            }
+
+            if (array_key_exists('topup_inputs', $item)) {
+                if (!is_array($item['topup_inputs'])) {
+                    throw new InvalidArgumentException(
+                        "Product at index {$i}: 'topup_inputs' must be an associative array of string values."
+                    );
+                }
+
+                foreach ($item['topup_inputs'] as $key => $value) {
+                    if (!is_string($key) || $key === '' || !is_string($value)) {
+                        throw new InvalidArgumentException(
+                            "Product at index {$i}: 'topup_inputs' must contain non-empty string keys and string values."
+                        );
+                    }
+                }
             }
 
             $seenRefs[$item['ref']] = true;

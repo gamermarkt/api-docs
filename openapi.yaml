@@ -129,7 +129,8 @@ paths:
         **Paginated mode:** pass `per_page` (and optionally `page`) to receive a subset of
         results along with a `meta` pagination object.
 
-        - Top-up products (requiring dynamic target IDs) are always excluded.
+        - Both standard and top-up products are returned. Use the `is_topup` filter to narrow results.
+        - Top-up products include a `topup_inputs` array describing the fields the buyer must fill in when ordering (e.g. game user ID, server).
         - `name` and `category_name` language is controlled by the `lang` parameter (`tr`/`en`); defaults to the authenticated user's account language.
         - `price` is always in the authenticated user's currency.
         - `stock` is the number of units currently available; `0` means out of stock.
@@ -169,6 +170,16 @@ paths:
           schema:
             type: integer
           example: 5
+        - name: list_topups
+          in: query
+          description: |
+            When set to `1`, top-up products are included alongside standard
+            products. When omitted or `0`, only standard products are returned.
+          schema:
+            type: integer
+            enum: [0, 1]
+            default: 0
+          example: 1
       responses:
         "200":
           description: Product list
@@ -190,6 +201,7 @@ paths:
                         price: "50.00"
                         currency: "TRY"
                         stock: 120
+                        topup_inputs: null
                       - ref: "steam-100-try"
                         name: "Steam 100 TRY"
                         category_id: 5
@@ -198,6 +210,27 @@ paths:
                         price: "100.00"
                         currency: "TRY"
                         stock: 45
+                        topup_inputs: null
+                topup_product:
+                  summary: Top-up product with input definitions
+                  value:
+                    success: true
+                    data:
+                      - ref: "valorant-vp-1050"
+                        name: "1050 VP"
+                        category_id: 12
+                        category_name: "Valorant"
+                        is_topup: true
+                        price: "250.00"
+                        currency: "TRY"
+                        stock: 50
+                        topup_inputs:
+                          - key: "riot_id"
+                            type: "TEXT"
+                            label: "Riot ID"
+                            placeholder: "Örn: Player#TR1"
+                            sort: 0
+                            max: 255
                 paginated:
                   summary: Paginated (per_page provided)
                   value:
@@ -211,6 +244,7 @@ paths:
                         price: "50.00"
                         currency: "TRY"
                         stock: 120
+                        topup_inputs: null
                     meta:
                       total: 200
                       page: 1
@@ -294,6 +328,7 @@ paths:
         - `amount` must be between **1 and 49** per line item.
         - Maximum **20 distinct products** per request.
         - **Duplicate refs** in the same request are rejected — combine quantities into a single entry instead.
+        - **Top-up products** (`is_topup: true`) must have `amount: 1` and require a `topup_inputs` object containing all fields defined in the product's `topup_inputs` array.
         - The full order amount is deducted from the user's balance atomically.
         - Orders are processed automatically; digital goods are delivered to the account.
 
@@ -308,6 +343,14 @@ paths:
         | Order record could not be saved | `Order could not be created.` |
         | Payment deduction failed | `Payment failed.` |
         | Steam/Google/Apple codes for non-TR users | `Steam Wallet Codes, Google Play Codes, Apple iTunes Codes are unavailable.` |
+        | Top-up product amount > 1 | `Top-up products can only be ordered 1 at a time: {ref}` |
+        | Top-up product missing inputs | `topup_inputs is required for top-up product: {ref}` |
+        | Missing required topup field | `Missing required topup input '{key}' for product: {ref}` |
+        | Invalid topup SELECT value | `Invalid option for topup input '{key}' on product: {ref}` |
+        | Topup TEXT input too long | `Topup input '{key}' exceeds maximum length of {max} for product: {ref}` |
+        | Topup NUMBER input not numeric | `Topup input '{key}' must be a number for product: {ref}` |
+        | Topup NUMBER below minimum | `Topup input '{key}' must be at least {min} for product: {ref}` |
+        | Topup NUMBER above maximum | `Topup input '{key}' must be at most {max} for product: {ref}` |
       tags: [Orders]
       requestBody:
         required: true
@@ -330,6 +373,14 @@ paths:
                       amount: 2
                     - ref: "pubg-mobile-60uc"
                       amount: 5
+              topup_product:
+                summary: Top-up product with required inputs
+                value:
+                  products:
+                    - ref: "valorant-vp-1050"
+                      amount: 1
+                      topup_inputs:
+                        riot_id: "Player#TR1"
       responses:
         "201":
           description: Order created successfully
@@ -675,9 +726,17 @@ components:
         is_topup:
           type: boolean
           description: |
-            Always `false` via the API. Top-up products that require
-            a target account ID are excluded from this endpoint.
+            `true` for top-up products that require user inputs (e.g. game user ID)
+            before fulfilment. When ordering a top-up product, you must provide
+            `topup_inputs` in the order request.
           examples: [false]
+        topup_inputs:
+          type: ["array", "null"]
+          description: |
+            Input definitions for top-up products. `null` for standard products.
+            Each entry describes one required field the buyer must fill in when ordering.
+          items:
+            $ref: "#/components/schemas/TopupInputDefinition"
         price:
           type: string
           description: Unit price in the user's currency (2 decimal places)
@@ -692,6 +751,52 @@ components:
           minimum: 0
           description: Units available right now; `0` means out of stock
           examples: [120]
+
+    TopupInputDefinition:
+      type: object
+      required: [key, type, label]
+      properties:
+        key:
+          type: string
+          description: Input field identifier — use as the key in `topup_inputs` when ordering
+          examples: ["user_id"]
+        type:
+          type: string
+          enum: [TEXT, NUMBER, SELECT]
+          description: Input field type
+          examples: ["TEXT"]
+        label:
+          type: string
+          description: Human-readable label (localised per the `lang` parameter)
+          examples: ["User ID"]
+        placeholder:
+          type: ["string", "null"]
+          description: Placeholder hint (localised per the `lang` parameter)
+          examples: ["Example: 12345"]
+        sort:
+          type: integer
+          description: Display order (ascending)
+          examples: [0]
+        min:
+          type: ["integer", "null"]
+          description: Minimum value (NUMBER type only)
+        max:
+          type: ["integer", "null"]
+          description: Maximum value/length (NUMBER and TEXT types)
+          examples: [255]
+        options:
+          type: ["array", "null"]
+          description: Available choices (SELECT type only)
+          items:
+            type: object
+            required: [value, label]
+            properties:
+              value:
+                type: string
+                examples: ["eu"]
+              label:
+                type: string
+                examples: ["Europe"]
 
     ProductListResponse:
       type: object
@@ -780,8 +885,17 @@ components:
           type: integer
           minimum: 1
           maximum: 49
-          description: Quantity to purchase
+          description: Quantity to purchase. Must be `1` for top-up products.
           examples: [2]
+        topup_inputs:
+          type: ["object", "null"]
+          description: |
+            Required for top-up products (`is_topup: true`). A key-value map
+            where keys match the `key` field from the product's `topup_inputs`
+            definition. Ignored for standard products.
+          additionalProperties:
+            type: string
+          examples: [{ "user_id": "123456789" }]
 
     CreateOrderRequest:
       type: object

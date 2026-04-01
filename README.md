@@ -154,7 +154,7 @@ Returns the authenticated user's available and blocked balance in their account 
 
 #### `GET /products`
 
-Returns active, purchasable products. Top-up products (requiring dynamic target IDs) are always excluded.
+Returns active, purchasable standard products. To include top-up products as well, pass `list_topups=1`.
 
 **Query Parameters:**
 
@@ -164,6 +164,7 @@ Returns active, purchasable products. Top-up products (requiring dynamic target 
 | `per_page`    | integer (1–100) | Items per page. **When omitted, all products are returned in a single response without a `meta` object.** |
 | `page`        | integer (≥1)    | Page number. Only used when `per_page` is also provided. Default: `1`                                     |
 | `category_id` | integer         | Filter by category ID. Omit to return all categories.                                                     |
+| `list_topups` | `0` \| `1`      | When set to `1`, top-up products are included alongside standard products. Default: `0`                   |
 
 **Response:**
 
@@ -179,19 +180,35 @@ Returns active, purchasable products. Top-up products (requiring dynamic target 
       "is_topup": false,
       "price": "50.00",
       "currency": "TRY",
-      "stock": 120
+      "stock": 120,
+      "topup_inputs": null
     }
   ]
 }
 ```
 
-| Field   | Description                                                    |
-| ------- | -------------------------------------------------------------- |
-| `ref`   | Unique product reference — use this value when creating orders |
-| `price` | Unit price in the user's account currency                      |
-| `stock` | Units currently available; `0` means out of stock              |
+| Field          | Description                                                              |
+| -------------- | ------------------------------------------------------------------------ |
+| `ref`          | Unique product reference — use this value when creating orders           |
+| `is_topup`     | `true` for products that require buyer input before fulfilment           |
+| `topup_inputs` | Input definition array for top-up products; `null` for standard products |
+| `price`        | Unit price in the user's account currency                                |
+| `stock`        | Units currently available; `0` means out of stock                        |
 
 When `per_page` is provided, a `meta` pagination object is included in the response.
+
+Top-up products include a `topup_inputs` array. Each entry describes one required field for ordering, for example:
+
+```json
+{
+  "key": "riot_id",
+  "type": "TEXT",
+  "label": "Riot ID",
+  "placeholder": "Örn: Player#TR1",
+  "sort": 0,
+  "max": 255
+}
+```
 
 ---
 
@@ -246,6 +263,8 @@ Places a new order using the authenticated user's account balance.
 - `amount` must be between **1 and 49** per line item.
 - Maximum **20 distinct products** per request.
 - Duplicate `ref` values in the same request are rejected — combine quantities into a single entry instead.
+- Top-up products (`is_topup: true`) must use `amount: 1`.
+- Top-up products require a `topup_inputs` object whose keys match the product's `topup_inputs` definitions.
 - The full order amount is deducted from the user's balance atomically; digital goods are delivered to the account automatically.
 
 **Request Body:**
@@ -255,6 +274,22 @@ Places a new order using the authenticated user's account balance.
   "products": [
     { "ref": "steam-50-try", "amount": 2 },
     { "ref": "pubg-mobile-60uc", "amount": 5 }
+  ]
+}
+```
+
+Top-up example:
+
+```json
+{
+  "products": [
+    {
+      "ref": "valorant-vp-1050",
+      "amount": 1,
+      "topup_inputs": {
+        "riot_id": "Player#TR1"
+      }
+    }
   ]
 }
 ```
@@ -283,6 +318,14 @@ Places a new order using the authenticated user's account balance.
 | Insufficient balance                      | `Insufficient balance.` (+ `redirect`, `balance_needed`, `currency` fields)  |
 | Currency mismatch                         | `Currency mismatch.`                                                         |
 | Steam/Google/Apple codes for non-TR users | `Steam Wallet Codes, Google Play Codes, Apple iTunes Codes are unavailable.` |
+| Top-up product amount > 1                 | `Top-up products can only be ordered 1 at a time: {ref}`                     |
+| Top-up product missing inputs             | `topup_inputs is required for top-up product: {ref}`                         |
+| Missing required topup field              | `Missing required topup input '{key}' for product: {ref}`                    |
+| Invalid topup SELECT value                | `Invalid option for topup input '{key}' on product: {ref}`                   |
+| Topup TEXT input too long                 | `Topup input '{key}' exceeds maximum length of {max} for product: {ref}`     |
+| Topup NUMBER input not numeric            | `Topup input '{key}' must be a number for product: {ref}`                    |
+| Topup NUMBER below minimum                | `Topup input '{key}' must be at least {min} for product: {ref}`              |
+| Topup NUMBER above maximum                | `Topup input '{key}' must be at most {max} for product: {ref}`               |
 
 The insufficient balance error also includes: `redirect` (URL to the top-up page), `balance_needed` (minimum amount to add, rounded up to the nearest integer), `currency` (lowercase).
 

@@ -22,16 +22,18 @@ echo $account['currency'];         // "TRY" or "EUR"
 // Products
 // ---------------------------------------------------------------------------
 
-// All products (no pagination), language English
+// All standard products (no pagination), language English
 $result = $api->getProducts(lang: 'en');
 
 foreach ($result['data'] as $product) {
     echo $product['ref'];           // "steam-50-try"
     echo $product['name'];          // "Steam 50 TRY"
+    echo $product['is_topup'] ? 'top-up' : 'standard';
     echo $product['price'];         // "50.00"
     echo $product['currency'];      // "TRY"
     echo $product['stock'];         // 120
     echo $product['category_name']; // "Steam"
+    var_export($product['topup_inputs']); // null for standard products
 }
 
 // Paginated — page 2, 20 items per page, filtered by category
@@ -43,6 +45,24 @@ foreach ($result['data'] as $product) {
 
 echo $result['meta']['total'];     // 200
 echo $result['meta']['last_page']; // 10
+
+// Include top-up products and inspect required buyer inputs
+$result = $api->getProducts(lang: 'en', listTopups: true);
+
+foreach ($result['data'] as $product) {
+    if (!$product['is_topup']) {
+        continue;
+    }
+
+    echo $product['ref'];  // "valorant-vp-1050"
+    echo $product['name']; // "1050 VP"
+
+    foreach ($product['topup_inputs'] ?? [] as $input) {
+        echo $input['key'];   // "riot_id"
+        echo $input['type'];  // "TEXT", "NUMBER", or "SELECT"
+        echo $input['label']; // "Riot ID"
+    }
+}
 
 
 // ---------------------------------------------------------------------------
@@ -103,6 +123,25 @@ try {
     ]);
 
     echo 'Order #' . $order['order_id'] . ' placed — ' . $order['amount'] . ' ' . $order['currency'];
+} catch (GamerMarktException $e) {
+    echo 'API error [' . $e->getErrorCode() . ']: ' . $e->getMessage();
+}
+
+// Top-up product — pass the required input keys from getProducts(listTopups: true)
+try {
+    $order = $api->createOrder([
+        [
+            'ref' => 'valorant-vp-1050',
+            'amount' => 1,
+            'topup_inputs' => [
+                'riot_id' => 'Player#TR1',
+            ],
+        ],
+    ]);
+
+    echo 'Top-up order #' . $order['order_id'];
+} catch (InvalidArgumentException $e) {
+    echo 'Validation: ' . $e->getMessage();
 } catch (GamerMarktException $e) {
     echo 'API error [' . $e->getErrorCode() . ']: ' . $e->getMessage();
 }
