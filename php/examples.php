@@ -161,6 +161,9 @@ foreach ($order['deliveries'] as $delivery) {
     if (isset($delivery['code'])) {
         // E-pin / gift card
         echo $delivery['product_ref'] . ': ' . $delivery['code'];
+    } elseif (isset($delivery['topup_values'])) {
+        // Top-up product
+        echo $delivery['product_ref'] . ': ' . json_encode($delivery['topup_values']);
     } else {
         // Account credential
         echo $delivery['product_ref'] . ': ' . $delivery['username'] . ' / ' . $delivery['password'];

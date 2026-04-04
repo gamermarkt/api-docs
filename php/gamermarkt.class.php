@@ -183,10 +183,12 @@ class GamerMarkt
      * Returns full details for a single order, including deliveries.
      *
      * Each entry in `deliveries` is either:
-     *   - Account product: {product_ref, username, password, delivered_at}
-     *   - E-pin / code:    {product_ref, code, delivered_at}
+     *   - Account product: {product_ref, username, password}
+     *   - E-pin / code:    {product_ref, code}
+     *   - Top-up product:  {product_ref, topup_values}
      *
-     * `deliveries` is empty while status is 'processing'.
+     * `deliveries` is empty while status is 'processing'. Delivery entries are
+     * generated from the same order snapshot used by the order details page.
      *
      * @return array<string, mixed>
      * @throws GamerMarktException

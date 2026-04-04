@@ -351,8 +351,7 @@ _Account products_ (game accounts, subscriptions, etc.):
 {
   "product_ref": "netflix-1m-tr",
   "username": "user@example.com",
-  "password": "secret123",
-  "delivered_at": "2024-06-15T10:30:05+03:00"
+  "password": "secret123"
 }
 ```
 
@@ -361,9 +360,20 @@ _E-pin / Code products_ (Steam cards, gift codes, etc.):
 ```json
 {
   "product_ref": "steam-50-try",
-  "code": "ABCD-EFGH-IJKL-MNOP",
-  "delivered_at": "2024-06-15T10:30:05+03:00"
+  "code": "ABCD-EFGH-IJKL-MNOP"
 }
 ```
 
-> `deliveries` is empty while the order is still `processing`. A `completed` order with non-empty `products` will always have corresponding entries in `deliveries`.
+_Top-up products_ expose the stored top-up input snapshot:
+
+```json
+{
+  "product_ref": "valorant-vp-tr-375",
+  "topup_values": {
+    "player_id": "12345678",
+    "region": "tr"
+  }
+}
+```
+
+> `deliveries` is empty while the order is still `processing`. Delivery entries are generated from the same order snapshot used by the order details page.
