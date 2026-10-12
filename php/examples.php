@@ -66,6 +66,29 @@ foreach ($result['data'] as $product) {
 
 
 // ---------------------------------------------------------------------------
+// Coupons
+// ---------------------------------------------------------------------------
+
+// The account's coupons, the list the My Coupons page shows
+$result = $api->getCoupons(lang: 'en');
+
+foreach ($result['data'] as $coupon) {
+    echo $coupon['code'];                // "K7Q2XPA"
+    echo $coupon['name'];                // "Special for You"
+    echo $coupon['status'];              // "active", "used", "cancelled", "expired" or "invalid"
+    echo implode(', ', $coupon['categories']);
+    echo $coupon['discount_percentage']; // "10.00", or null for a fixed-amount coupon
+    echo $coupon['max_discount_amount']; // "25.00"
+    echo $coupon['expires_at'];          // "2026-11-30T23:59:59+03:00"
+}
+
+echo $result['meta']['counts']['active']; // number of usable coupons
+
+// Only the coupons that can be used now
+$result = $api->getCoupons(status: 'active');
+
+
+// ---------------------------------------------------------------------------
 // Orders — list
 // ---------------------------------------------------------------------------
 
@@ -95,9 +118,11 @@ try {
         ['ref' => 'steam-50-try', 'amount' => 1],
     ]);
 
-    echo $order['order_id']; // 456
-    echo $order['amount'];   // "50.00"
-    echo $order['currency']; // "TRY"
+    echo $order['order_id'];    // 456
+    echo $order['amount'];      // "45.00" — charged, after the discount
+    echo $order['discount'];    // "5.00"
+    echo $order['coupon_code']; // the coupon applied automatically, null if none
+    echo $order['currency'];    // "TRY"
 
 } catch (InvalidArgumentException $e) {
     // Local validation failed (duplicate ref, amount out of range, etc.)
@@ -113,6 +138,19 @@ try {
             echo 'Top-up URL: '    . $payload['redirect'];
         }
     }
+}
+
+// Pick a coupon yourself: pass its code (from getCoupons()). Without a code the
+// active coupon with the largest discount for the products is applied automatically.
+try {
+    $order = $api->createOrder([
+        ['ref' => 'steam-50-try', 'amount' => 2],
+    ], couponCode: 'K7Q2XPA');
+
+    echo 'Order #' . $order['order_id'] . ' — discount ' . $order['discount'];
+} catch (GamerMarktException $e) {
+    // For a coupon that cannot be used the message says why, e.g. "This coupon has expired."
+    echo 'API error [' . $e->getErrorCode() . ']: ' . $e->getMessage();
 }
 
 // Multiple products

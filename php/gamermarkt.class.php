@@ -133,6 +133,39 @@ class GamerMarkt
         return $this->request('GET', '/products', $query);
     }
 
+    // ── Coupons ─────────────────────────────────────────────────────────────
+
+    /**
+     * Returns the account's coupons, newest first: the list the My Coupons page shows.
+     *
+     * An 'active' coupon is applied to an order automatically when it fits the
+     * ordered products; pass its `code` to createOrder() to pick it instead.
+     * `meta.counts` holds the number of coupons in each state.
+     *
+     * @param  string|null $status  'all' (default), 'active', 'used' or 'invalid'
+     *                              ('invalid' covers cancelled, expired and run-out coupons).
+     * @param  string|null $lang    Language for name/categories: 'tr' or 'en'.
+     *                              Defaults to the user's account language.
+     * @param  int         $page    Page number (≥1).
+     * @param  int         $perPage Items per page (1–50).
+     * @return array{success: bool, data: array<int, array<string, mixed>>, meta: array}
+     * @throws GamerMarktException
+     * @throws RuntimeException
+     */
+    public function getCoupons(
+        ?string $status  = null,
+        ?string $lang    = null,
+        int     $page    = 1,
+        int     $perPage = 20
+    ): array {
+        $query = ['page' => $page, 'per_page' => $perPage];
+
+        if ($status !== null) $query['status'] = $status;
+        if ($lang   !== null) $query['lang']   = $lang;
+
+        return $this->request('GET', '/coupons', $query);
+    }
+
     // ── Orders ──────────────────────────────────────────────────────────────
 
     /**
@@ -166,17 +199,39 @@ class GamerMarkt
      *   - No duplicate refs.
      *   - Amount between 1 and 49.
      *
+     * Coupons: pass a coupon's code (from getCoupons()) as $couponCode to use that
+     * coupon; the order fails with an error saying why when it cannot be used.
+     * Without a code the active coupon with the largest discount for the ordered
+     * products is applied automatically. The coupon the order used is returned
+     * as `coupon_code` (null when none applied).
+     *
      * @param  array<int, array{ref: string, amount: int, topup_inputs?: array<string, string>}> $products
-     * @return array{order_id: int, amount: string, discount: string, currency: string}
+     * @param  string|null $couponCode Code of one of the account's coupons.
+     * @param  string|null $lang       Language of the ORDER_FAILED messages: 'tr' or 'en'.
+     *                                 Defaults to the user's account language.
+     * @return array{order_id: int, amount: string, discount: string, coupon_code: string|null, currency: string}
+     *         `amount` is what was charged, after the `discount`.
      * @throws InvalidArgumentException   on local validation failure
      * @throws GamerMarktException        on API error
      * @throws RuntimeException
      */
-    public function createOrder(array $products): array
+    public function createOrder(array $products, ?string $couponCode = null, ?string $lang = null): array
     {
         $this->validateOrderProducts($products);
 
-        return $this->request('POST', '/orders', [], ['products' => $products])['data'];
+        $body = ['products' => $products];
+
+        if ($couponCode !== null) {
+            if (trim($couponCode) === '') {
+                throw new InvalidArgumentException("'couponCode' must be a non-empty string.");
+            }
+
+            $body['coupon_code'] = trim($couponCode);
+        }
+
+        $query = $lang !== null ? ['lang' => $lang] : [];
+
+        return $this->request('POST', '/orders', $query, $body)['data'];
     }
 
     /**
@@ -187,8 +242,11 @@ class GamerMarkt
      *   - E-pin / code:    {product_ref, code}
      *   - Top-up product:  {product_ref, topup_values}
      *
-     * `deliveries` is empty while status is 'processing'. Delivery entries are
-     * generated from the same order snapshot used by the order details page.
+     * `deliveries` is empty while status is 'processing', except for top-up
+     * entries, which echo the inputs the order was placed with from the start
+     * (`products[].delivered` tells whether the top-up has been loaded).
+     * Delivery entries are generated from the same order snapshot used by the
+     * order details page. `amount` is the total charged, after the `discount`.
      *
      * @return array<string, mixed>
      * @throws GamerMarktException

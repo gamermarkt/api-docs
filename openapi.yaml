@@ -18,7 +18,7 @@ info:
     ### Obtaining an API Key
 
     1. Log in to your GamerMarkt account.
-    2. Navigate to **Dashboard → API Access** (`/dashboard/api-access`).
+    2. Navigate to **Dashboard → API Access** (`/api-access`).
     3. Complete email verification and click **Generate API Key**.
     4. Copy the key immediately — it will be partially masked afterwards.
 
@@ -86,6 +86,8 @@ tags:
     description: Authenticated user account information
   - name: Products
     description: Browse available products
+  - name: Coupons
+    description: The account's coupons, as shown on the My Coupons page
   - name: Orders
     description: Create and inspect orders
 
@@ -129,19 +131,19 @@ paths:
         **Paginated mode:** pass `per_page` (and optionally `page`) to receive a subset of
         results along with a `meta` pagination object.
 
-        - Both standard and top-up products are returned. Use the `is_topup` filter to narrow results.
+        - Standard products are returned by default; pass `list_topups=1` to include top-up products as well.
         - Top-up products include a `topup_inputs` array describing the fields the buyer must fill in when ordering (e.g. game user ID, server).
         - `name` and `category_name` language is controlled by the `lang` parameter (`tr`/`en`); defaults to the authenticated user's account language.
         - `price` is always in the authenticated user's currency.
-        - `stock` is the number of units currently available; `0` means out of stock.
+        - `stock` is exact below 50 units; from 50 up it is rounded down to `50` (50–100 units), `100` (101–200) or `200` (more than 200). `0` means out of stock.
       tags: [Products]
       parameters:
         - name: lang
           in: query
           description: |
             Language for `name` and `category_name` fields.
-            Accepts `tr` or `en`. When omitted, the language is determined by the
-            authenticated user's registered country.
+            Accepts `tr` or `en`. When omitted, the authenticated user's account language
+            is used: `tr` when it is Turkish, otherwise `en`.
           schema:
             type: string
             enum: [tr, en]
@@ -150,7 +152,7 @@ paths:
           in: query
           description: |
             Items per page. **When omitted, all products are returned without pagination.**
-            Must be between 1 and 100 when provided.
+            Between 1 and 100; a value outside that range is moved to the nearest limit.
           schema:
             type: integer
             minimum: 1
@@ -255,13 +257,106 @@ paths:
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
 
+  /coupons:
+    get:
+      operationId: listCoupons
+      summary: List coupons
+      description: |
+        Returns a paginated list of the authenticated user's coupons, newest first: the same list, states and
+        figures as the **My Coupons** page. Deleted coupons are not listed.
+
+        An `active` coupon is applied to an order automatically when it fits the ordered products
+        (see `POST /orders`); its `code` can also be sent as `coupon_code` to pick it.
+      tags: [Coupons]
+      parameters:
+        - name: status
+          in: query
+          description: |
+            Filter by state: `active` (usable now), `used`, `invalid` (cancelled, expired or run out), or `all`.
+            `meta.counts` holds the number of coupons in each.
+          schema:
+            type: string
+            enum: [all, active, used, invalid]
+            default: all
+        - name: lang
+          in: query
+          description: Language of `name` and `categories` (defaults to the account language)
+          schema:
+            type: string
+            enum: [tr, en]
+        - name: page
+          in: query
+          description: Page number (1-based)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          description: Items per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: Coupon list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CouponListResponse"
+              example:
+                success: true
+                data:
+                  - id: 812
+                    code: "K7Q2XPA"
+                    name: "Special for You"
+                    status: "active"
+                    categories: ["Steam"]
+                    discount_percentage: "10.00"
+                    max_discount_amount: "25.00"
+                    min_shopping_amount: "100.00"
+                    currency: "TRY"
+                    usage_count: 0
+                    max_usage_count: null
+                    total_discount: "0.00"
+                    expires_at: "2026-11-30T23:59:59+03:00"
+                    used_at: null
+                    order_id: null
+                meta:
+                  total: 1
+                  page: 1
+                  per_page: 20
+                  last_page: 1
+                  counts:
+                    all: 4
+                    active: 1
+                    used: 2
+                    invalid: 1
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "422":
+          description: Invalid `status`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+              example:
+                success: false
+                error: "status must be one of: all, active, used, invalid."
+                code: "VALIDATION_ERROR"
+
   /orders:
     get:
       operationId: listOrders
       summary: List orders
       description: |
-        Returns a paginated list of all orders placed by the authenticated user,
-        sorted newest first.
+        Returns a paginated list of the authenticated user's product orders (placed through the API or
+        the website basket), sorted newest first. Other order types, such as listing purchases and
+        advertising, are not included.
       tags: [Orders]
       parameters:
         - name: page
@@ -329,29 +424,64 @@ paths:
         - Maximum **20 distinct products** per request.
         - **Duplicate refs** in the same request are rejected — combine quantities into a single entry instead.
         - **Top-up products** (`is_topup: true`) must have `amount: 1` and require a `topup_inputs` object containing all fields defined in the product's `topup_inputs` array.
-        - The full order amount is deducted from the user's balance atomically.
+        - **Coupons:** send a coupon's `code` (from `GET /coupons`) as `coupon_code` to use that coupon. Without
+          `coupon_code`, the active coupon with the largest discount for the ordered products is applied
+          automatically, exactly as the basket does. The applied coupon is returned as `coupon_code`.
+        - The full order amount, less the coupon discount, is deducted from the user's balance atomically.
         - Orders are processed automatically; digital goods are delivered to the account.
 
-        ### Possible `ORDER_FAILED` reasons
-        | Condition | Error message |
-        |-----------|---------------|
-        | Account has no purchase permission | `You do not have permission to make purchases.` |
-        | Product ref not found or inactive | `Product not found: {ref}` |
-        | Insufficient stock | `Not enough stock for {name}. Available: {n}` |
-        | Insufficient balance | `Insufficient balance.` (includes `redirect`, `balance_needed`, `currency`) |
-        | Currency mismatch | `Currency mismatch.` |
-        | Order record could not be saved | `Order could not be created.` |
-        | Payment deduction failed | `Payment failed.` |
-        | Steam/Google/Apple codes for non-TR users | `Steam Wallet Codes, Google Play Codes, Apple iTunes Codes are unavailable.` |
-        | Top-up product amount > 1 | `Top-up products can only be ordered 1 at a time: {ref}` |
-        | Top-up product missing inputs | `topup_inputs is required for top-up product: {ref}` |
-        | Missing required topup field | `Missing required topup input '{key}' for product: {ref}` |
-        | Invalid topup SELECT value | `Invalid option for topup input '{key}' on product: {ref}` |
-        | Topup TEXT input too long | `Topup input '{key}' exceeds maximum length of {max} for product: {ref}` |
-        | Topup NUMBER input not numeric | `Topup input '{key}' must be a number for product: {ref}` |
-        | Topup NUMBER below minimum | `Topup input '{key}' must be at least {min} for product: {ref}` |
-        | Topup NUMBER above maximum | `Topup input '{key}' must be at most {max} for product: {ref}` |
+        ### Errors
+
+        `code` is the stable part of an error; `error` is a human-readable message that may be reworded.
+        `ORDER_FAILED` messages follow the `lang` parameter (`tr` or `en`; default: the account language), all other
+        messages are always English. The messages below are the English ones.
+
+        | Condition | HTTP | `code` | `error` |
+        |-----------|------|--------|---------|
+        | Body larger than 64 KB | 413 | `PAYLOAD_TOO_LARGE` | `Request body too large.` |
+        | `products` missing, empty or not a list | 422 | `VALIDATION_ERROR` | `products array is required.` |
+        | More than 20 products | 422 | `VALIDATION_ERROR` | `Maximum 20 products per order.` |
+        | An entry without a `ref` | 422 | `VALIDATION_ERROR` | `Each product must have a ref.` |
+        | The same `ref` twice | 422 | `VALIDATION_ERROR` | `Duplicate product refs are not allowed. Combine amounts into a single entry per ref.` |
+        | `ref` missing or `amount` outside 1–49 | 422 | `VALIDATION_ERROR` | `Invalid product entry: ref required, amount must be 1-49.` |
+        | `ref` unknown or inactive | 422 | `NOT_FOUND` | `Product not found: {ref}` |
+        | Top-up product without `topup_inputs` | 422 | `VALIDATION_ERROR` | `topup_inputs is required for top-up product: {ref}` |
+        | A `topup_inputs` value that is not a string or number | 422 | `VALIDATION_ERROR` | `topup_inputs values must be strings or numbers: {ref}` |
+        | `coupon_code` empty or not a string | 422 | `VALIDATION_ERROR` | `coupon_code must be a non-empty string.` |
+        | `coupon_code` is not one of your coupons | 422 | `NOT_FOUND` | `Coupon not found: {code}` |
+        | Account has no purchase permission | 422 | `ORDER_FAILED` | `You do not have permission to make purchases.` |
+        | Top-up product with `amount` above 1 | 422 | `ORDER_FAILED` | `Only 1 unit of each top-up product can be ordered at a time.` |
+        | Top-up input missing | 422 | `ORDER_FAILED` | `Missing required field: '{key}'.` |
+        | Top-up TEXT input too short or too long | 422 | `ORDER_FAILED` | `Field '{key}' is shorter than minimum length.` / `Field '{key}' exceeds maximum length.` |
+        | Top-up NUMBER input not a number, below or above its limits | 422 | `ORDER_FAILED` | `Field '{key}' must be a number.` / `Field '{key}' is below minimum value.` / `Field '{key}' exceeds maximum value.` |
+        | Top-up SELECT input not one of the options | 422 | `ORDER_FAILED` | `Invalid option for field '{key}'.` |
+        | Insufficient stock | 422 | `ORDER_FAILED` | `Not enough stock for {name}. Available: {n}` |
+        | Turkish account whose phone number is not verified (orders in TRY need a verified phone) | 422 | `ORDER_FAILED` | `Currency mismatch.` |
+        | Insufficient balance | 422 | `ORDER_FAILED` | `Insufficient balance.` (with `redirect`, `balance_needed` and `currency`) |
+        | Order could not be saved or paid | 422 | `ORDER_FAILED` | `Order could not be created.` / `Payment failed.` |
+
+        When the chosen `coupon_code` cannot be used, the order is not placed and `error` says why (`ORDER_FAILED`):
+
+        | Reason | `error` |
+        |--------|---------|
+        | Already used | `This coupon has already been used.` |
+        | Expired | `This coupon has expired.` |
+        | Cancelled | `This coupon has been cancelled.` |
+        | Not usable for another reason | `This coupon can no longer be used.` |
+        | Not valid for the ordered products | `This coupon does not apply to the products in your order. It is valid for: {categories}.` |
+        | Coupon is in another currency | `This coupon is only valid for orders in {currency}.` |
+        | Ordered products below its minimum | `To use this coupon, the products it covers must total at least {amount}.` |
+        | Any other case | `This coupon cannot be applied to this order.` |
       tags: [Orders]
+      parameters:
+        - name: lang
+          in: query
+          description: |
+            Language of the `ORDER_FAILED` messages and of the product names stored on the order.
+            Accepts `tr` or `en`. When omitted, the account language is used: `tr` when it is Turkish, otherwise `en`.
+          schema:
+            type: string
+            enum: [tr, en]
       requestBody:
         required: true
         content:
@@ -373,6 +503,13 @@ paths:
                       amount: 2
                     - ref: "pubg-mobile-60uc"
                       amount: 5
+              with_coupon:
+                summary: Order with a chosen coupon
+                value:
+                  products:
+                    - ref: "steam-50-try"
+                      amount: 2
+                  coupon_code: "K7Q2XPA"
               topup_product:
                 summary: Top-up product with required inputs
                 value:
@@ -392,13 +529,24 @@ paths:
                 success: true
                 data:
                   order_id: 456
-                  amount: "100.00"
-                  discount: "0.00"
+                  amount: "90.00"
+                  discount: "10.00"
+                  coupon_code: "K7Q2XPA"
                   currency: "TRY"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
+        "413":
+          description: Request body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                error: "Request body too large."
+                code: "PAYLOAD_TOO_LARGE"
         "422":
           description: Validation error or order failure
           content:
@@ -433,6 +581,18 @@ paths:
                     success: false
                     error: "Product not found: steam-999-try"
                     code: "NOT_FOUND"
+                coupon_not_found:
+                  summary: coupon_code is not one of the account's coupons
+                  value:
+                    success: false
+                    error: "Coupon not found: K7Q2XPA"
+                    code: "NOT_FOUND"
+                coupon_not_applicable:
+                  summary: The chosen coupon cannot be used
+                  value:
+                    success: false
+                    error: "This coupon has expired."
+                    code: "ORDER_FAILED"
                 out_of_stock:
                   summary: Insufficient stock
                   value:
@@ -490,9 +650,10 @@ paths:
         }
         ```
 
-        `deliveries` is empty while the order is still `processing`.
-        Delivery entries are generated from the same order snapshot used by
-        the order details page.
+        `deliveries` is empty while the order is still `processing`. Top-up entries are the exception: they
+        echo the inputs the order was placed with, so they are present from the start; `products[].delivered`
+        tells whether the top-up has been loaded. Delivery entries are generated from the same order snapshot
+        used by the order details page.
       tags: [Orders]
       parameters:
         - name: id
@@ -714,7 +875,7 @@ components:
         blocked_balance:
           type: string
           description: |
-            Balance reserved for pending orders — not yet spendable.
+            Balance on hold by GamerMarkt — not spendable until it is released.
           examples: ["10.00"]
         currency:
           type: string
@@ -811,11 +972,11 @@ components:
           description: Display order (ascending)
           examples: [0]
         min:
-          type: ["integer", "null"]
-          description: Minimum value (NUMBER type only)
+          type: ["number", "null"]
+          description: Smallest allowed value (NUMBER) or length in characters (TEXT)
         max:
-          type: ["integer", "null"]
-          description: Maximum value/length (NUMBER and TEXT types)
+          type: ["number", "null"]
+          description: Largest allowed value (NUMBER) or length in characters (TEXT)
           examples: [255]
         options:
           type: ["array", "null"]
@@ -904,6 +1065,133 @@ components:
         meta:
           $ref: "#/components/schemas/PaginationMeta"
 
+    # ── Coupons ────────────────────────────────────────────────────────────
+
+    Coupon:
+      type: object
+      required:
+        [
+          id,
+          code,
+          name,
+          status,
+          categories,
+          discount_percentage,
+          max_discount_amount,
+          min_shopping_amount,
+          currency,
+          usage_count,
+          max_usage_count,
+          total_discount,
+          expires_at,
+          used_at,
+          order_id,
+        ]
+      properties:
+        id:
+          type: integer
+          examples: [812]
+        code:
+          type: string
+          description: Coupon code; send it as `coupon_code` when ordering
+          examples: ["K7Q2XPA"]
+        name:
+          type: string
+          description: Coupon name in the requested language
+          examples: ["Special for You"]
+        status:
+          type: string
+          enum: [active, used, cancelled, expired, invalid]
+          description: |
+            - `active` — can be used now
+            - `used` — spent (a multi-use coupon only once its last use is taken)
+            - `cancelled` — cancelled by us
+            - `expired` — past its expiry date
+            - `invalid` — no longer usable for another reason
+        categories:
+          type: array
+          items:
+            type: string
+          description: Where the coupon applies, as the My Coupons page names them
+          examples: [["Steam"]]
+        discount_percentage:
+          type: [string, "null"]
+          description: Percentage off the matching products (2 decimal places); null for a fixed-amount coupon, whose discount is `max_discount_amount`
+          examples: ["10.00"]
+        max_discount_amount:
+          type: string
+          description: The most the coupon takes off one order (2 decimal places)
+          examples: ["25.00"]
+        min_shopping_amount:
+          type: string
+          description: Smallest matching total the coupon applies to (2 decimal places; `"0.00"` if none)
+          examples: ["100.00"]
+        currency:
+          type: string
+          enum: [TRY, EUR]
+          description: Currency of the amounts; the coupon applies to orders in this currency
+          examples: ["TRY"]
+        usage_count:
+          type: integer
+          description: Times the coupon has been used
+          examples: [0]
+        max_usage_count:
+          type: [integer, "null"]
+          description: Times it can be used; null for a single-use coupon
+          examples: [null]
+        total_discount:
+          type: string
+          description: Total discount the coupon has given so far (2 decimal places)
+          examples: ["0.00"]
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          examples: ["2026-11-30T23:59:59+03:00"]
+        used_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the coupon was spent; null while it can still be used
+          examples: [null]
+        order_id:
+          type: [integer, "null"]
+          description: The order a spent coupon was used on
+          examples: [null]
+
+    CouponListResponse:
+      type: object
+      required: [success, data, meta]
+      properties:
+        success:
+          type: boolean
+          examples: [true]
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Coupon"
+        meta:
+          allOf:
+            - $ref: "#/components/schemas/PaginationMeta"
+            - type: object
+              required: [counts]
+              properties:
+                counts:
+                  type: object
+                  description: Number of the account's coupons in each state, whatever the `status` filter
+                  required: [all, active, used, invalid]
+                  properties:
+                    all:
+                      type: integer
+                      examples: [4]
+                    active:
+                      type: integer
+                      examples: [1]
+                    used:
+                      type: integer
+                      examples: [2]
+                    invalid:
+                      type: integer
+                      examples: [1]
+
     # ── Order create ───────────────────────────────────────────────────────
 
     CreateOrderItem:
@@ -944,10 +1232,17 @@ components:
             of the same product.
           items:
             $ref: "#/components/schemas/CreateOrderItem"
+        coupon_code:
+          type: string
+          description: |
+            Code of one of the account's coupons (`GET /coupons`) to use for this order. It must fit the ordered
+            products, or the order fails. Omit it to have the active coupon with the largest discount applied
+            automatically.
+          examples: ["K7Q2XPA"]
 
     CreateOrderData:
       type: object
-      required: [order_id, amount, discount, currency]
+      required: [order_id, amount, discount, coupon_code, currency]
       properties:
         order_id:
           type: integer
@@ -961,6 +1256,10 @@ components:
           type: string
           description: Discount applied (2 decimal places; `"0.00"` if none)
           examples: ["0.00"]
+        coupon_code:
+          type: [string, "null"]
+          description: Code of the coupon the order used; null if none was applied
+          examples: [null]
         currency:
           type: string
           enum: [TRY, EUR]
@@ -989,7 +1288,7 @@ components:
           examples: ["steam-50-try"]
         name:
           type: string
-          description: Product name at the time of purchase
+          description: Product name at the time of purchase, in the language the order was placed in (`lang` parameter of the create request, or the account language)
           examples: ["Steam 50 TRY"]
         amount:
           type: integer
@@ -997,7 +1296,7 @@ components:
           examples: [2]
         delivered:
           type: integer
-          description: Quantity delivered so far (< `amount` means partial delivery)
+          description: Quantity delivered so far (< `amount` means partial delivery, or units removed and refunded)
           examples: [2]
         price:
           type: string
@@ -1100,7 +1399,7 @@ components:
           examples: [null]
         cancellation_reason:
           type: [string, "null"]
-          description: Plain-text reason for cancellation; null if not cancelled
+          description: Plain-text reason for cancellation in the account language (`tr` when it is Turkish, otherwise `en`); null if not cancelled
           examples: [null]
         products:
           type: array
@@ -1111,7 +1410,8 @@ components:
           type: array
           description: |
             Digital goods delivered for this order.
-            Empty while status is `processing`.
+            Empty while status is `processing`, except for top-up entries, which echo the inputs the order
+            was placed with from the start (see `products[].delivered`).
             Each item is either a credential pair (account), a single code (e-pin),
             or a stored top-up input snapshot.
           items:
@@ -1202,7 +1502,7 @@ components:
     Unauthorized:
       description: |
         Authentication failed. Possible reasons:
-        - `Authorization` / `X-Api-Key` header is missing
+        - `X-Api-Key` header is missing
         - Key is not exactly 64 characters
         - Key does not exist in the database
         - Key has been deactivated
