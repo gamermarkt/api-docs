@@ -38,8 +38,9 @@ info:
 
     ## Pagination
 
-    Paginated endpoints accept `page` and `per_page` query parameters and
-    return a `meta` object:
+    Paginated endpoints accept `page` (1–1,000,000) and `per_page` query parameters and
+    return a `meta` object. A value that is not a whole number or is out of range is
+    refused with `422 VALIDATION_ERROR`, never silently replaced:
 
     ```json
     {
@@ -64,15 +65,19 @@ info:
     }
     ```
 
-    See individual endpoints for the specific error codes they can return.
+    See individual endpoints for the specific error codes they can return. Every answer is
+    JSON in this envelope, also for an unknown path (`404 NOT_FOUND`), an unexpected failure
+    (`500 INTERNAL_ERROR`) and maintenance (`503 SERVICE_UNAVAILABLE`, with a `Retry-After`
+    header).
 
     ## Rate Limiting
 
     > **All endpoints share a single limit of 15 requests per minute.**
     >
-    > Exceeding this limit will cause your requests to be blocked for an extended
-    > period. Design your integration accordingly — cache responses where possible
-    > and avoid polling at high frequency.
+    > The limit is enforced in front of the API, not by the API itself: once it is exceeded the
+    > request is answered with a verification page (HTML, not JSON) and a client that keeps sending
+    > can be blocked for an extended period. Design your integration accordingly — cache responses
+    > where possible and avoid polling at high frequency.
 
 servers:
   - url: https://www.gamermarkt.com/api/v1
@@ -132,6 +137,8 @@ paths:
         results along with a `meta` pagination object.
 
         - Standard products are returned by default; pass `list_topups=1` to include top-up products as well.
+        - Only products that are on sale are returned (their category is active and not a draft). Products whose codes are valid for Turkey's stores only (Steam wallet, Apple iTunes and Google Play codes) are left out for accounts outside Turkey.
+        - `name`, `category_name` and the top-up `label`s are plain text.
         - Top-up products include a `topup_inputs` array describing the fields the buyer must fill in when ordering (e.g. game user ID, server).
         - `name` and `category_name` language is controlled by the `lang` parameter (`tr`/`en`); defaults to the authenticated user's account language.
         - `price` is always in the authenticated user's currency.
@@ -152,7 +159,7 @@ paths:
           in: query
           description: |
             Items per page. **When omitted, all products are returned without pagination.**
-            Between 1 and 100; a value outside that range is moved to the nearest limit.
+            Whole number between 1 and 100; anything else is a `422`.
           schema:
             type: integer
             minimum: 1
@@ -256,6 +263,16 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
+        "422":
+          description: A query value that is not a whole number or is out of range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+              example:
+                success: false
+                error: "per_page must be a whole number between 1 and 50."
+                code: "VALIDATION_ERROR"
 
   /coupons:
     get:
@@ -266,21 +283,22 @@ paths:
         figures as the **My Coupons** page. Deleted coupons are not listed.
 
         An `active` coupon is applied to an order automatically when it fits the ordered products
-        (see `POST /orders`); its `code` can also be sent as `coupon_code` to pick it.
+        (see `POST /orders`); its `code` can also be sent as `coupon_code` to pick it. A coupon comes
+        back to `active` when the order that used it is cancelled and refunded.
       tags: [Coupons]
       parameters:
         - name: status
           in: query
           description: |
-            Filter by state: `active` (usable now), `used`, `invalid` (cancelled, expired or run out), or `all`.
-            `meta.counts` holds the number of coupons in each.
+            Filter by state: `active` (usable now), `used`, `cancelled`, `expired`, `invalid` (cancelled, expired
+            or run out) or `all`. `meta.counts` holds the number of coupons in each.
           schema:
             type: string
-            enum: [all, active, used, invalid]
+            enum: [all, active, used, cancelled, expired, invalid]
             default: all
         - name: lang
           in: query
-          description: Language of `name` and `categories` (defaults to the account language)
+          description: Language of `name` and `categories` (defaults to the account language); both are plain text
           schema:
             type: string
             enum: [tr, en]
@@ -332,8 +350,10 @@ paths:
                   counts:
                     all: 4
                     active: 1
-                    used: 2
-                    invalid: 1
+                    used: 1
+                    cancelled: 1
+                    expired: 1
+                    invalid: 2
         "401":
           $ref: "#/components/responses/Unauthorized"
         "405":
@@ -411,6 +431,16 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "405":
           $ref: "#/components/responses/MethodNotAllowed"
+        "422":
+          description: A query value that is not a whole number or is out of range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+              example:
+                success: false
+                error: "per_page must be a whole number between 1 and 50."
+                code: "VALIDATION_ERROR"
 
     post:
       operationId: createOrder
@@ -424,9 +454,16 @@ paths:
         - Maximum **20 distinct products** per request.
         - **Duplicate refs** in the same request are rejected — combine quantities into a single entry instead.
         - **Top-up products** (`is_topup: true`) must have `amount: 1` and require a `topup_inputs` object containing all fields defined in the product's `topup_inputs` array.
+        - `amount` is a whole number (a JSON number or digits in a string); `1.5`, `true` or `"2 pcs"` are refused.
         - **Coupons:** send a coupon's `code` (from `GET /coupons`) as `coupon_code` to use that coupon. Without
-          `coupon_code`, the active coupon with the largest discount for the ordered products is applied
-          automatically, exactly as the basket does. The applied coupon is returned as `coupon_code`.
+          `coupon_code`, the active coupon with the largest discount for the ordered products (the one that
+          expires first among equals) is applied automatically, exactly as the basket does. Send
+          `use_coupon: false` to order without any coupon (it cannot be combined with `coupon_code`). The applied
+          coupon is returned as `coupon_code`.
+        - A `ref` that is not on sale (its category is inactive or a draft) is `NOT_FOUND`. Steam, Apple iTunes and
+          Google Play codes are not sold to accounts outside Turkey.
+        - The order, its payment and the coupon use happen together: a failed order leaves nothing behind, no charge,
+          no spent coupon and no cancelled order. Orders sent at the same time from one account are all paid.
         - The full order amount, less the coupon discount, is deducted from the user's balance atomically.
         - Orders are processed automatically; digital goods are delivered to the account.
 
@@ -439,6 +476,7 @@ paths:
         | Condition | HTTP | `code` | `error` |
         |-----------|------|--------|---------|
         | Body larger than 64 KB | 413 | `PAYLOAD_TOO_LARGE` | `Request body too large.` |
+        | Body is not a JSON object | 422 | `VALIDATION_ERROR` | `Request body must be a JSON object.` |
         | `products` missing, empty or not a list | 422 | `VALIDATION_ERROR` | `products array is required.` |
         | More than 20 products | 422 | `VALIDATION_ERROR` | `Maximum 20 products per order.` |
         | An entry without a `ref` | 422 | `VALIDATION_ERROR` | `Each product must have a ref.` |
@@ -447,18 +485,23 @@ paths:
         | `ref` unknown or inactive | 422 | `NOT_FOUND` | `Product not found: {ref}` |
         | Top-up product without `topup_inputs` | 422 | `VALIDATION_ERROR` | `topup_inputs is required for top-up product: {ref}` |
         | A `topup_inputs` value that is not a string or number | 422 | `VALIDATION_ERROR` | `topup_inputs values must be strings or numbers: {ref}` |
+        | `use_coupon` is not true or false | 422 | `VALIDATION_ERROR` | `use_coupon must be true or false.` |
+        | `use_coupon: false` together with `coupon_code` | 422 | `VALIDATION_ERROR` | `coupon_code cannot be combined with use_coupon: false.` |
         | `coupon_code` empty or not a string | 422 | `VALIDATION_ERROR` | `coupon_code must be a non-empty string.` |
         | `coupon_code` is not one of your coupons | 422 | `NOT_FOUND` | `Coupon not found: {code}` |
         | Account has no purchase permission | 422 | `ORDER_FAILED` | `You do not have permission to make purchases.` |
         | Top-up product with `amount` above 1 | 422 | `ORDER_FAILED` | `Only 1 unit of each top-up product can be ordered at a time.` |
         | Top-up input missing | 422 | `ORDER_FAILED` | `Missing required field: '{key}'.` |
-        | Top-up TEXT input too short or too long | 422 | `ORDER_FAILED` | `Field '{key}' is shorter than minimum length.` / `Field '{key}' exceeds maximum length.` |
+        | Top-up TEXT input too short or too long (255 characters when the product sets no maximum) | 422 | `ORDER_FAILED` | `Field '{key}' is shorter than minimum length.` / `Field '{key}' exceeds maximum length.` |
         | Top-up NUMBER input not a number, below or above its limits | 422 | `ORDER_FAILED` | `Field '{key}' must be a number.` / `Field '{key}' is below minimum value.` / `Field '{key}' exceeds maximum value.` |
         | Top-up SELECT input not one of the options | 422 | `ORDER_FAILED` | `Invalid option for field '{key}'.` |
+        | Input the product does not define | 422 | `ORDER_FAILED` | `Unknown field: '{key}'.` |
+        | Steam, Apple iTunes or Google Play code, account outside Turkey | 422 | `ORDER_FAILED` | `{name} is only sold to accounts in Turkey.` |
         | Insufficient stock | 422 | `ORDER_FAILED` | `Not enough stock for {name}. Available: {n}` |
         | Turkish account whose phone number is not verified (orders in TRY need a verified phone) | 422 | `ORDER_FAILED` | `Currency mismatch.` |
         | Insufficient balance | 422 | `ORDER_FAILED` | `Insufficient balance.` (with `redirect`, `balance_needed` and `currency`) |
         | Order could not be saved or paid | 422 | `ORDER_FAILED` | `Order could not be created.` / `Payment failed.` |
+        | Unexpected failure | 500 | `INTERNAL_ERROR` | `Internal server error.` |
 
         When the chosen `coupon_code` cannot be used, the order is not placed and `error` says why (`ORDER_FAILED`):
 
@@ -510,6 +553,13 @@ paths:
                     - ref: "steam-50-try"
                       amount: 2
                   coupon_code: "K7Q2XPA"
+              without_coupon:
+                summary: Order without the automatic coupon
+                value:
+                  products:
+                    - ref: "steam-50-try"
+                      amount: 2
+                  use_coupon: false
               topup_product:
                 summary: Top-up product with required inputs
                 value:
@@ -1177,7 +1227,7 @@ components:
                 counts:
                   type: object
                   description: Number of the account's coupons in each state, whatever the `status` filter
-                  required: [all, active, used, invalid]
+                  required: [all, active, used, cancelled, expired, invalid]
                   properties:
                     all:
                       type: integer
@@ -1187,10 +1237,17 @@ components:
                       examples: [1]
                     used:
                       type: integer
-                      examples: [2]
-                    invalid:
+                      examples: [1]
+                    cancelled:
                       type: integer
                       examples: [1]
+                    expired:
+                      type: integer
+                      examples: [1]
+                    invalid:
+                      type: integer
+                      description: Cancelled, expired or run out
+                      examples: [2]
 
     # ── Order create ───────────────────────────────────────────────────────
 
@@ -1239,6 +1296,11 @@ components:
             products, or the order fails. Omit it to have the active coupon with the largest discount applied
             automatically.
           examples: ["K7Q2XPA"]
+        use_coupon:
+          type: boolean
+          default: true
+          description: |
+            `false` orders without any coupon, instead of the automatic one. Cannot be combined with `coupon_code`.
 
     CreateOrderData:
       type: object

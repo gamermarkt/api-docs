@@ -142,7 +142,7 @@ class GamerMarkt
      * ordered products; pass its `code` to createOrder() to pick it instead.
      * `meta.counts` holds the number of coupons in each state.
      *
-     * @param  string|null $status  'all' (default), 'active', 'used' or 'invalid'
+     * @param  string|null $status  'all' (default), 'active', 'used', 'cancelled', 'expired' or 'invalid'
      *                              ('invalid' covers cancelled, expired and run-out coupons).
      * @param  string|null $lang    Language for name/categories: 'tr' or 'en'.
      *                              Defaults to the user's account language.
@@ -202,24 +202,34 @@ class GamerMarkt
      * Coupons: pass a coupon's code (from getCoupons()) as $couponCode to use that
      * coupon; the order fails with an error saying why when it cannot be used.
      * Without a code the active coupon with the largest discount for the ordered
-     * products is applied automatically. The coupon the order used is returned
-     * as `coupon_code` (null when none applied).
+     * products is applied automatically; pass $useCoupon = false to order without
+     * any coupon. The coupon the order used is returned as `coupon_code` (null
+     * when none applied).
      *
      * @param  array<int, array{ref: string, amount: int, topup_inputs?: array<string, string>}> $products
      * @param  string|null $couponCode Code of one of the account's coupons.
      * @param  string|null $lang       Language of the ORDER_FAILED messages: 'tr' or 'en'.
      *                                 Defaults to the user's account language.
+     * @param  bool        $useCoupon  false: no coupon at all (cannot be combined with $couponCode).
      * @return array{order_id: int, amount: string, discount: string, coupon_code: string|null, currency: string}
      *         `amount` is what was charged, after the `discount`.
      * @throws InvalidArgumentException   on local validation failure
      * @throws GamerMarktException        on API error
      * @throws RuntimeException
      */
-    public function createOrder(array $products, ?string $couponCode = null, ?string $lang = null): array
+    public function createOrder(array $products, ?string $couponCode = null, ?string $lang = null, bool $useCoupon = true): array
     {
         $this->validateOrderProducts($products);
 
         $body = ['products' => $products];
+
+        if (!$useCoupon) {
+            if ($couponCode !== null) {
+                throw new InvalidArgumentException("'couponCode' cannot be combined with useCoupon = false.");
+            }
+
+            $body['use_coupon'] = false;
+        }
 
         if ($couponCode !== null) {
             if (trim($couponCode) === '') {

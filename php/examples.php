@@ -153,6 +153,17 @@ try {
     echo 'API error [' . $e->getErrorCode() . ']: ' . $e->getMessage();
 }
 
+// No coupon at all, not even the automatic one
+try {
+    $order = $api->createOrder([
+        ['ref' => 'steam-50-try', 'amount' => 1],
+    ], useCoupon: false);
+
+    echo 'Order #' . $order['order_id'] . ' — discount ' . $order['discount']; // "0.00"
+} catch (GamerMarktException $e) {
+    echo 'API error [' . $e->getErrorCode() . ']: ' . $e->getMessage();
+}
+
 // Multiple products
 try {
     $order = $api->createOrder([

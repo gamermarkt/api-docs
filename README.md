@@ -84,7 +84,7 @@ All monetary values in responses are returned as **strings** with exactly two de
 
 ## Pagination
 
-Paginated endpoints accept `page` and `per_page` query parameters and return a `meta` object:
+Paginated endpoints accept `page` (1–1,000,000) and `per_page` query parameters and return a `meta` object. A value that is not a whole number or is out of range is refused with `422 VALIDATION_ERROR`, never silently replaced:
 
 ```json
 {
@@ -111,7 +111,7 @@ All errors follow a consistent envelope:
 }
 ```
 
-See individual endpoints for the specific error codes they can return.
+See individual endpoints for the specific error codes they can return. Every answer is JSON in this envelope, also for an unknown path (`404 NOT_FOUND`), an unexpected failure (`500 INTERNAL_ERROR`) and maintenance (`503 SERVICE_UNAVAILABLE`, with a `Retry-After` header).
 
 ---
 
@@ -119,7 +119,7 @@ See individual endpoints for the specific error codes they can return.
 
 > **All endpoints share a single limit of 15 requests per minute.**
 >
-> Exceeding this limit will cause your requests to be blocked for an extended period. Design your integration accordingly — cache responses where possible and avoid polling at high frequency.
+> The limit is enforced in front of the API, not by the API itself: once it is exceeded the request is answered with a verification page (HTML, not JSON) and a client that keeps sending can be blocked for an extended period. Design your integration accordingly — cache responses where possible and avoid polling at high frequency.
 
 ---
 
@@ -156,17 +156,17 @@ Returns the authenticated user's available and blocked balance in their account 
 
 #### `GET /products`
 
-Returns active, purchasable standard products. To include top-up products as well, pass `list_topups=1`.
+Returns active, purchasable standard products. To include top-up products as well, pass `list_topups=1`. Only products that are on sale are returned (their category is active and not a draft); Steam wallet, Apple iTunes and Google Play codes, which are valid for Turkey's stores only, are left out for accounts outside Turkey. `name`, `category_name` and the top-up labels are plain text.
 
 **Query Parameters:**
 
-| Parameter     | Type            | Description                                                                                                                                                    |
-| ------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lang`        | `tr` \| `en`    | Language for `name` and `category_name` fields. Defaults to the authenticated user's account language.                                                         |
-| `per_page`    | integer (1–100) | Items per page; a value outside 1–100 is moved to the nearest limit. **When omitted, all products are returned in a single response without a `meta` object.** |
-| `page`        | integer (≥1)    | Page number. Only used when `per_page` is also provided. Default: `1`                                                                                          |
-| `category_id` | integer         | Filter by category ID. Omit to return all categories.                                                                                                          |
-| `list_topups` | `0` \| `1`      | When set to `1`, top-up products are included alongside standard products. Default: `0`                                                                        |
+| Parameter     | Type            | Description                                                                                                                                                     |
+| ------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lang`        | `tr` \| `en`    | Language for `name` and `category_name` fields. Defaults to the authenticated user's account language.                                                          |
+| `per_page`    | integer (1–100) | Items per page; anything but a whole number from 1 to 100 is a `422`. **When omitted, all products are returned in a single response without a `meta` object.** |
+| `page`        | integer (≥1)    | Page number. Only used when `per_page` is also provided. Default: `1`                                                                                           |
+| `category_id` | integer         | Filter by category ID. Omit to return all categories.                                                                                                           |
+| `list_topups` | `0` \| `1`      | When set to `1`, top-up products are included alongside standard products. Default: `0`                                                                         |
 
 **Response:**
 
@@ -220,16 +220,16 @@ Top-up products include a `topup_inputs` array. Each entry describes one require
 
 Returns the authenticated user's coupons, newest first: the same list, states and figures as the **My Coupons** page on the website. Deleted coupons are not listed.
 
-An `active` coupon is applied to an order automatically when it fits the ordered products (see `POST /orders`); its `code` can also be sent as `coupon_code` to pick it.
+An `active` coupon is applied to an order automatically when it fits the ordered products (see `POST /orders`); its `code` can also be sent as `coupon_code` to pick it. A coupon comes back to `active` when the order that used it is cancelled and refunded.
 
 **Query Parameters:**
 
-| Parameter  | Type                                     | Default          | Description                                                                                                                  |
-| ---------- | ---------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `status`   | `all` \| `active` \| `used` \| `invalid` | `all`            | Filter by state. `invalid` covers cancelled, expired and run-out coupons. `meta.counts` holds the number of coupons in each. |
-| `lang`     | `tr` \| `en`                             | account language | Language of `name` and `categories`                                                                                          |
-| `page`     | integer (≥1)                             | `1`              | Page number                                                                                                                  |
-| `per_page` | integer (1–50)                           | `20`             | Items per page                                                                                                               |
+| Parameter  | Type                                                                 | Default          | Description                                                                                                                  |
+| ---------- | -------------------------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `status`   | `all` \| `active` \| `used` \| `cancelled` \| `expired` \| `invalid` | `all`            | Filter by state. `invalid` covers cancelled, expired and run-out coupons. `meta.counts` holds the number of coupons in each. |
+| `lang`     | `tr` \| `en`                                                         | account language | Language of `name` and `categories`                                                                                          |
+| `page`     | integer (≥1)                                                         | `1`              | Page number                                                                                                                  |
+| `per_page` | integer (1–50)                                                       | `20`             | Items per page                                                                                                               |
 
 **Response:**
 
@@ -260,7 +260,14 @@ An `active` coupon is applied to an order automatically when it fits the ordered
     "page": 1,
     "per_page": 20,
     "last_page": 1,
-    "counts": { "all": 4, "active": 1, "used": 2, "invalid": 1 }
+    "counts": {
+      "all": 4,
+      "active": 1,
+      "used": 1,
+      "cancelled": 1,
+      "expired": 1,
+      "invalid": 2
+    }
   }
 }
 ```
@@ -330,12 +337,14 @@ Places a new order using the authenticated user's account balance.
 **Rules:**
 
 - Each product is identified by its `ref` string (from `GET /products`).
-- `amount` must be between **1 and 49** per line item.
+- `amount` must be a whole number (a JSON number or digits in a string) between **1 and 49** per line item; `1.5`, `true` or `"2 pcs"` are refused.
 - Maximum **20 distinct products** per request.
 - Duplicate `ref` values in the same request are rejected — combine quantities into a single entry instead.
 - Top-up products (`is_topup: true`) must use `amount: 1`.
 - Top-up products require a `topup_inputs` object whose keys match the product's `topup_inputs` definitions.
-- **Coupons:** send a coupon's `code` (from `GET /coupons`) as `coupon_code` to use that coupon. Without `coupon_code`, the active coupon with the largest discount for the ordered products is applied automatically, exactly as on the website basket. The applied coupon is returned as `coupon_code`.
+- **Coupons:** send a coupon's `code` (from `GET /coupons`) as `coupon_code` to use that coupon. Without `coupon_code`, the active coupon with the largest discount for the ordered products (the one that expires first among equals) is applied automatically, exactly as on the website basket. Send `use_coupon: false` to order without any coupon (it cannot be combined with `coupon_code`). The applied coupon is returned as `coupon_code`.
+- A `ref` that is not on sale (its category is inactive or a draft) is `NOT_FOUND`. Steam, Apple iTunes and Google Play codes are not sold to accounts outside Turkey.
+- The order, its payment and the coupon use happen together: a failed order leaves nothing behind, no charge, no spent coupon and no cancelled order. Orders sent at the same time from one account are all paid.
 - The full order amount, less the coupon discount, is deducted from the user's balance atomically; digital goods are delivered to the account automatically.
 
 **Query Parameters:**
@@ -361,6 +370,15 @@ With a chosen coupon:
 {
   "products": [{ "ref": "steam-50-try", "amount": 2 }],
   "coupon_code": "K7Q2XPA"
+}
+```
+
+Without any coupon:
+
+```json
+{
+  "products": [{ "ref": "steam-50-try", "amount": 2 }],
+  "use_coupon": false
 }
 ```
 
@@ -401,29 +419,35 @@ Top-up example:
 
 `code` is the stable part of an error; `error` is a human-readable message that may be reworded. `ORDER_FAILED` messages follow the `lang` parameter, all other messages are always English. The messages below are the English ones.
 
-| Condition                                                                                | HTTP | `code`              | `error`                                                                                                              |
-| ---------------------------------------------------------------------------------------- | ---- | ------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Body larger than 64 KB                                                                   | 413  | `PAYLOAD_TOO_LARGE` | `Request body too large.`                                                                                            |
-| `products` missing, empty or not a list                                                  | 422  | `VALIDATION_ERROR`  | `products array is required.`                                                                                        |
-| More than 20 products                                                                    | 422  | `VALIDATION_ERROR`  | `Maximum 20 products per order.`                                                                                     |
-| An entry without a `ref`                                                                 | 422  | `VALIDATION_ERROR`  | `Each product must have a ref.`                                                                                      |
-| The same `ref` twice                                                                     | 422  | `VALIDATION_ERROR`  | `Duplicate product refs are not allowed. Combine amounts into a single entry per ref.`                               |
-| `ref` missing or `amount` outside 1–49                                                   | 422  | `VALIDATION_ERROR`  | `Invalid product entry: ref required, amount must be 1-49.`                                                          |
-| `ref` unknown or inactive                                                                | 422  | `NOT_FOUND`         | `Product not found: {ref}`                                                                                           |
-| Top-up product without `topup_inputs`                                                    | 422  | `VALIDATION_ERROR`  | `topup_inputs is required for top-up product: {ref}`                                                                 |
-| A `topup_inputs` value that is not a string or number                                    | 422  | `VALIDATION_ERROR`  | `topup_inputs values must be strings or numbers: {ref}`                                                              |
-| `coupon_code` empty or not a string                                                      | 422  | `VALIDATION_ERROR`  | `coupon_code must be a non-empty string.`                                                                            |
-| `coupon_code` is not one of your coupons                                                 | 422  | `NOT_FOUND`         | `Coupon not found: {code}`                                                                                           |
-| Account has no purchase permission                                                       | 422  | `ORDER_FAILED`      | `You do not have permission to make purchases.`                                                                      |
-| Top-up product with `amount` above 1                                                     | 422  | `ORDER_FAILED`      | `Only 1 unit of each top-up product can be ordered at a time.`                                                       |
-| Top-up input missing                                                                     | 422  | `ORDER_FAILED`      | `Missing required field: '{key}'.`                                                                                   |
-| Top-up TEXT input too short or too long                                                  | 422  | `ORDER_FAILED`      | `Field '{key}' is shorter than minimum length.` / `Field '{key}' exceeds maximum length.`                            |
-| Top-up NUMBER input not a number, below or above its limits                              | 422  | `ORDER_FAILED`      | `Field '{key}' must be a number.` / `Field '{key}' is below minimum value.` / `Field '{key}' exceeds maximum value.` |
-| Top-up SELECT input not one of the options                                               | 422  | `ORDER_FAILED`      | `Invalid option for field '{key}'.`                                                                                  |
-| Insufficient stock                                                                       | 422  | `ORDER_FAILED`      | `Not enough stock for {name}. Available: {n}`                                                                        |
-| Turkish account whose phone number is not verified (orders in TRY need a verified phone) | 422  | `ORDER_FAILED`      | `Currency mismatch.`                                                                                                 |
-| Insufficient balance                                                                     | 422  | `ORDER_FAILED`      | `Insufficient balance.` (with `redirect`, `balance_needed`, `currency`)                                              |
-| Order could not be saved or paid                                                         | 422  | `ORDER_FAILED`      | `Order could not be created.` / `Payment failed.`                                                                    |
+| Condition                                                                                 | HTTP | `code`              | `error`                                                                                                              |
+| ----------------------------------------------------------------------------------------- | ---- | ------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Body larger than 64 KB                                                                    | 413  | `PAYLOAD_TOO_LARGE` | `Request body too large.`                                                                                            |
+| Body is not a JSON object                                                                 | 422  | `VALIDATION_ERROR`  | `Request body must be a JSON object.`                                                                                |
+| `products` missing, empty or not a list                                                   | 422  | `VALIDATION_ERROR`  | `products array is required.`                                                                                        |
+| More than 20 products                                                                     | 422  | `VALIDATION_ERROR`  | `Maximum 20 products per order.`                                                                                     |
+| An entry without a `ref`                                                                  | 422  | `VALIDATION_ERROR`  | `Each product must have a ref.`                                                                                      |
+| The same `ref` twice                                                                      | 422  | `VALIDATION_ERROR`  | `Duplicate product refs are not allowed. Combine amounts into a single entry per ref.`                               |
+| `ref` missing or `amount` outside 1–49                                                    | 422  | `VALIDATION_ERROR`  | `Invalid product entry: ref required, amount must be 1-49.`                                                          |
+| `ref` unknown or inactive                                                                 | 422  | `NOT_FOUND`         | `Product not found: {ref}`                                                                                           |
+| Top-up product without `topup_inputs`                                                     | 422  | `VALIDATION_ERROR`  | `topup_inputs is required for top-up product: {ref}`                                                                 |
+| A `topup_inputs` value that is not a string or number                                     | 422  | `VALIDATION_ERROR`  | `topup_inputs values must be strings or numbers: {ref}`                                                              |
+| `use_coupon` is not true or false                                                         | 422  | `VALIDATION_ERROR`  | `use_coupon must be true or false.`                                                                                  |
+| `use_coupon: false` together with `coupon_code`                                           | 422  | `VALIDATION_ERROR`  | `coupon_code cannot be combined with use_coupon: false.`                                                             |
+| `coupon_code` empty or not a string                                                       | 422  | `VALIDATION_ERROR`  | `coupon_code must be a non-empty string.`                                                                            |
+| `coupon_code` is not one of your coupons                                                  | 422  | `NOT_FOUND`         | `Coupon not found: {code}`                                                                                           |
+| Account has no purchase permission                                                        | 422  | `ORDER_FAILED`      | `You do not have permission to make purchases.`                                                                      |
+| Top-up product with `amount` above 1                                                      | 422  | `ORDER_FAILED`      | `Only 1 unit of each top-up product can be ordered at a time.`                                                       |
+| Top-up input missing                                                                      | 422  | `ORDER_FAILED`      | `Missing required field: '{key}'.`                                                                                   |
+| Top-up TEXT input too short or too long (255 characters when the product sets no maximum) | 422  | `ORDER_FAILED`      | `Field '{key}' is shorter than minimum length.` / `Field '{key}' exceeds maximum length.`                            |
+| Top-up NUMBER input not a number, below or above its limits                               | 422  | `ORDER_FAILED`      | `Field '{key}' must be a number.` / `Field '{key}' is below minimum value.` / `Field '{key}' exceeds maximum value.` |
+| Top-up SELECT input not one of the options                                                | 422  | `ORDER_FAILED`      | `Invalid option for field '{key}'.`                                                                                  |
+| Input the product does not define                                                         | 422  | `ORDER_FAILED`      | `Unknown field: '{key}'.`                                                                                            |
+| Steam, Apple iTunes or Google Play code, account outside Turkey                           | 422  | `ORDER_FAILED`      | `{name} is only sold to accounts in Turkey.`                                                                         |
+| Insufficient stock                                                                        | 422  | `ORDER_FAILED`      | `Not enough stock for {name}. Available: {n}`                                                                        |
+| Turkish account whose phone number is not verified (orders in TRY need a verified phone)  | 422  | `ORDER_FAILED`      | `Currency mismatch.`                                                                                                 |
+| Insufficient balance                                                                      | 422  | `ORDER_FAILED`      | `Insufficient balance.` (with `redirect`, `balance_needed`, `currency`)                                              |
+| Order could not be saved or paid                                                          | 422  | `ORDER_FAILED`      | `Order could not be created.` / `Payment failed.`                                                                    |
+| Unexpected failure                                                                        | 500  | `INTERNAL_ERROR`    | `Internal server error.`                                                                                             |
 
 When the chosen `coupon_code` cannot be used, the order is not placed and `error` says why (`ORDER_FAILED`):
 
@@ -488,3 +512,17 @@ _Top-up products_ expose the stored top-up input snapshot:
 ```
 
 > `deliveries` is empty while the order is still `processing`. Top-up entries are the exception: they echo the inputs the order was placed with, so they are present from the start; `products[].delivered` tells whether the top-up has been loaded. `delivered` below `amount` means a partial delivery, or units that were removed and refunded. Delivery entries are generated from the same order snapshot used by the order details page.
+
+---
+
+## Changes
+
+### 2026-10-12
+
+- **Coupons:** new `GET /coupons`; `POST /orders` takes `coupon_code` and `use_coupon: false` and applies the best coupon automatically otherwise; the response carries `coupon_code`.
+- **Plain-text names:** product, category, top-up label, order line and coupon names no longer arrive HTML-escaped (`Apple Store & iTunes`, not `Apple Store &amp; iTunes`).
+- **Order amounts:** `amount` in `GET /orders` and `GET /order/{id}` is the total charged, after the discount, as `POST /orders` already returned it. `delivered` no longer counts units that were removed and refunded.
+- **Stricter input:** `amount`, `page`, `per_page`, `category_id` and `list_topups` must be whole numbers within their ranges (`422 VALIDATION_ERROR`); a top-up product takes only the inputs it defines.
+- **Prices and orders follow the account currency**, not the country of the server that sends the request.
+- **Not on sale:** products in an inactive or draft category are not listed and cannot be ordered; Steam wallet, Apple iTunes and Google Play codes are not sold to accounts outside Turkey.
+- **Always JSON:** unknown paths, unexpected failures and maintenance answer in the error envelope (`404`, `500`, `503`); `X-Api-Key` is read before a Bearer token.
