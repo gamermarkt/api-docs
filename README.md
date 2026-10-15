@@ -65,7 +65,9 @@ X-Api-Key: <api_key>
 3. Complete email verification and click **Generate API Key**.
 4. Copy the key immediately — it will be partially masked afterwards.
 
-> **Note:** Only one key exists per account. You can regenerate it at any time (the old key becomes invalid immediately) or toggle it active/inactive. A minimum purchase history may be required before key generation is unlocked.
+> **Note:** Only one key exists per account. You can regenerate it at any time (the old key becomes invalid immediately) or toggle it active/inactive; activating it again asks for an email verification code, as generating does. A minimum purchase history may be required before key generation is unlocked.
+>
+> A password reset or an email address change deletes the key (you are told by notification and email): generate a new one. While the account is banned, deactivated or deleted, its key is refused with `401 UNAUTHORIZED`.
 
 ---
 
